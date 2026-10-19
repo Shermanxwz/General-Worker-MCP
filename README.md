@@ -81,11 +81,22 @@ sudo env CLAUDE_SKILLS_DIR=/var/lib/claude-collection-web/.claude/skills CODEX_S
 
 ```sh
 sh tests/test-hook.sh                          # hook 和 matcher 测试，需要 jq，全部 PASS 时退出码为 0
+python3 -m pip install 'PyYAML>=6,<7'           # frontmatter 测试的依赖
+python3 -m unittest discover -s tests -v       # 元数据、隔离目录中的安装/备份/卸载测试
 python3 tests/check-codex-skills.py            # 问本机的 codex app-server 能否列出 worker
 python3 tests/check-codex-skills.py --cwd DIR  # 同上，但针对 DIR（DIR 下要有 .agents/skills/worker/SKILL.md）
 ```
 
-`check-codex-skills.py` 使用全新的临时 `CODEX_HOME`，不会读取真实的 `~/.codex`。它会列出非 system 的 skill，并标出 scope，找到 `worker` 时退出码为 0。
+`check-codex-skills.py` 使用全新的临时 `CODEX_HOME`，不会读取真实的 `~/.codex`。它会列出非 system 的 skill，并标出 scope，找到已启用的 `worker` 且没有加载错误时退出码为 0。可加 `--expected-path DIR/.agents/skills/worker/SKILL.md`，避免误把其他位置已安装的同名 skill 当作测试成功。
+
+### GitHub CI
+
+每次 push、pull request 和手动触发都会运行 [CI](https://github.com/Shermanxwz/General-Worker-MCP/actions/workflows/ci.yml)：
+
+- Python 3.10 / 3.14：Shell/Python 语法、Claude hook、YAML 元数据、安装/状态/备份/卸载，以及缺少 jq 时的保护。
+- 固定 Codex CLI `0.163.0`：将本次检出的 skill 安装到临时项目，用原生 App Server 的 `initialize` 和 `skills/list` 验证精确来源路径。
+
+所有安装测试都使用临时目录，不修改真实用户配置。CI 不登录账号、不发送模型请求、不消耗模型额度；这些检查不替代真实模型派活的端到端测试。
 
 ## 给部署它的 AI 的检查清单
 

@@ -3,7 +3,9 @@
 
 Starts `codex app-server` with CODEX_HOME set to a fresh temp dir (the real ~/.codex is
 never read), sends initialize and skills/list over stdio, prints the non-system skills it
-finds, and exits 0 if one of them is named "worker", 1 otherwise. Stdlib only.
+finds, and exits 0 if an enabled one is named "worker", 1 otherwise. Optionally
+requires that skill's source path, so another installed copy cannot hide a broken
+checkout in CI. Stdlib only; no model turns are started.
 """
 import argparse
 import json
@@ -101,6 +103,8 @@ def main():
     ap = argparse.ArgumentParser(description='Check that codex lists a skill named "worker".')
     ap.add_argument("--cwd", metavar="DIR",
                     help="directory to list skills for (default: a fresh temp dir)")
+    ap.add_argument("--expected-path", metavar="SKILL_MD",
+                    help="require the enabled worker skill to come from this file")
     args = ap.parse_args()
 
     made = []  # temp dirs this run creates; removed on exit. A --cwd directory is never removed.
@@ -138,11 +142,17 @@ def main():
         for e in errors:
             print(f"load error: {json.dumps(e, ensure_ascii=False)}", file=sys.stderr)
 
-        found = [s for s in shown if s.get("name") == "worker"]
+        found = [s for s in shown if s.get("name") == "worker" and s.get("enabled") is not False]
+        if args.expected_path:
+            expected = os.path.realpath(args.expected_path)
+            found = [s for s in found if s.get("path") and os.path.realpath(s["path"]) == expected]
+        if errors:
+            return 1
         if found:
             print(f"worker: found (scope={found[0].get('scope')})")
             return 0
-        print("worker: NOT found")
+        print("worker: NOT found (enabled, at expected path)" if args.expected_path
+              else "worker: NOT found (enabled)")
         return 1
     finally:
         for d in made:
