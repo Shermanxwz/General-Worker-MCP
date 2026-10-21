@@ -56,7 +56,7 @@ function modelEnter(dir, sid = 'sess') {
   return run(dir, {
     hook_event_name: 'PostToolUse',
     session_id: sid,
-    tool_name: 'mcp__worker__enter_worker_mode',
+    tool_name: 'mcp__plugin_worker_worker__enter_worker_mode',
     tool_input: { reason: '测试' },
     tool_response: { isError: false },
   });
@@ -69,7 +69,7 @@ function commonPrefix(a, b) {
 }
 
 describe('command matches: ON', () => {
-  const ON = ['/worker 修复登录', '/worker:worker 任务', '@worker 任务', '$worker', '/worker', '/worker:on 任务', '/worker 开启', '  /worker 修复'];
+  const ON = ['/worker 修复登录', '/worker:worker 任务', '@worker 任务', '$worker', '/worker', '/worker:on 任务', '/worker 开启', '  /worker 修复', '@worker 开 任务', '@worker start'];
   for (const p of ON) {
     test(`turns ON: ${JSON.stringify(p)}`, (t) => {
       const dir = freshDir(t);
@@ -88,7 +88,7 @@ describe('command matches: ON', () => {
 });
 
 describe('command matches: OFF', () => {
-  const OFF = ['/worker off', '/worker:off', '@worker off', '$WORKER OFF', '  /worker off', '/worker 关闭', '/worker 退出'];
+  const OFF = ['/worker off', '/worker:off', '@worker off', '$WORKER OFF', '  /worker off', '/worker 关闭', '/worker 退出', '/worker off.', '/worker off，', '@worker 关闭。', '@worker 停止！', '@worker 关', '@worker stop', '/worker:stop', '/WORKER:OFF', '/worker:worker off'];
   for (const p of OFF) {
     test(`turns OFF: ${JSON.stringify(p)}`, (t) => {
       const dir = freshDir(t);
@@ -106,7 +106,7 @@ describe('command matches: OFF', () => {
 });
 
 describe('command matches: STATUS', () => {
-  const STATUS = ['/worker status', '/worker:status', '/worker 状态'];
+  const STATUS = ['/worker status', '/worker:status', '/worker 状态', '@worker status。', '/worker 状态！'];
   for (const p of STATUS) {
     test(`STATUS while off: ${JSON.stringify(p)} reports off and writes nothing`, (t) => {
       const dir = freshDir(t);
@@ -121,7 +121,7 @@ describe('command matches: STATUS', () => {
 });
 
 describe('non-matches', () => {
-  const NOT_COMMAND = ['/workers', 'worker off', '看看 /worker', '/worker-off', '/worker:'];
+  const NOT_COMMAND = ['/workers', 'worker off', '看看 /worker', '/worker-off', '/worker:', '/worker:foo', '/worker:foo off', '/worker:start 任务'];
   for (const p of NOT_COMMAND) {
     test(`not a command, mode off: ${JSON.stringify(p)} gives no output and writes nothing`, (t) => {
       const dir = freshDir(t);

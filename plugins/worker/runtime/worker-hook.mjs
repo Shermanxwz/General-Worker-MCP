@@ -31,9 +31,12 @@ const BLOCKED_TOOLS = new Set([
   'Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'Bash', 'PowerShell', 'Monitor',
   'EnterWorktree', 'ExitWorktree', 'CronCreate', 'CronDelete', 'ScheduleWakeup', 'RemoteTrigger',
 ]);
-// Only these names are control tools: the plugin-scoped name (Claude) and the plain server name (Codex).
-// A look-alike from another server is an ordinary MCP tool: blocked on the main thread, ignored by PostToolUse.
-const CONTROL_TOOL_RE = /^mcp__(plugin_worker_worker|worker)__(enter|exit)_worker_mode$/;
+// Control tools are runtime-specific: Claude sees the plugin-scoped name, Codex the plain server name.
+// Any other name, including the other runtime's and look-alikes from other servers, is an ordinary MCP tool.
+const CONTROL_TOOL_RE = {
+  claude: /^mcp__plugin_worker_worker__(enter|exit)_worker_mode$/,
+  codex: /^mcp__worker__(enter|exit)_worker_mode$/,
+};
 const COMMAND_RE = /^[/@$]worker(?::([A-Za-z_-]+))?(?=\s|$)/i;
 // Action words, compared after trailing punctuation is stripped. Any other first word is task text, so the mode turns ON.
 const ACTION_WORDS = new Map([
@@ -148,10 +151,16 @@ function onSessionStart(input, runtime) {
   return hookOutput('SessionStart', rulesText(runtime));
 }
 
+// The control action ('enter' or 'exit') when toolName is this runtime's control tool, otherwise null.
+function controlAction(runtime, toolName) {
+  const match = typeof toolName === 'string' ? CONTROL_TOOL_RE[runtime]?.exec(toolName) : null;
+  return match ? match[1] : null;
+}
+
 // Every MCP tool is blocked on the main thread, since any of them may write outside the repo.
-// Only the two worker control tools pass, so the mode can still be switched.
-function isBlockedTool(name) {
-  if (typeof name !== 'string' || CONTROL_TOOL_RE.test(name)) return false;
+// Only this runtime's control tools pass, so the mode can still be switched.
+function isBlockedTool(runtime, name) {
+  if (typeof name !== 'string' || controlAction(runtime, name) !== null) return false;
   return BLOCKED_TOOLS.has(name) || name.startsWith('mcp__');
 }
 
@@ -159,7 +168,7 @@ function isBlockedTool(name) {
 // Codex gets no denial here and relies on the injected rules.
 function onPreToolUse(input, runtime) {
   if (runtime !== 'claude' || nonEmpty(input.agent_id)) return null;
-  if (!isBlockedTool(input.tool_name)) return null;
+  if (!isBlockedTool(runtime, input.tool_name)) return null;
   if (!readState(runtime, input.session_id).on) return null;
   return {
     hookSpecificOutput: {
@@ -178,8 +187,8 @@ function isErrorResponse(response) {
 // Acts only on real transitions: exit only while ON, enter only while OFF.
 // Both runtimes send the same shape. Codex's documented PostToolUse example uses hookSpecificOutput.additionalContext too.
 function onPostToolUse(input, runtime) {
-  const name = input.tool_name;
-  if (typeof name !== 'string' || !CONTROL_TOOL_RE.test(name)) return null;
+  const action = controlAction(runtime, input.tool_name);
+  if (action === null) return null;
   if (runtime === 'claude' && nonEmpty(input.agent_id)) return null;
   if (isErrorResponse(input.tool_response)) return null;
   const sid = input.session_id;
@@ -188,7 +197,7 @@ function onPostToolUse(input, runtime) {
     return null;
   }
   const state = readState(runtime, sid);
-  if (name.endsWith('__exit_worker_mode')) {
+  if (action === 'exit') {
     const reason = input.tool_input && input.tool_input.reason;
     if (!state.on || !nonEmpty(reason)) return null;
     const saved = saveState(runtime, sid, { on: false, updatedAt: nowIso(), by: 'model', notice: 'off' });

@@ -20,14 +20,13 @@ const DENY = {
 
 const BLOCKED = [
   'Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'Bash', 'PowerShell', 'Monitor',
+  'EnterWorktree', 'ExitWorktree', 'CronCreate', 'CronDelete', 'ScheduleWakeup', 'RemoteTrigger',
   'mcp__github__push_files', 'mcp__github__get_file_contents',
 ];
 const ALLOWED = [
   'Read', 'Agent', 'SendMessage', 'ToolSearch', 'Glob', 'Grep', 'TaskStop',
   'mcp__plugin_worker_worker__exit_worker_mode',
   'mcp__plugin_worker_worker__enter_worker_mode',
-  'mcp__worker__exit_worker_mode',
-  'mcp__worker__enter_worker_mode',
 ];
 const ENTER_P = 'mcp__plugin_worker_worker__enter_worker_mode';
 const EXIT_P = 'mcp__plugin_worker_worker__exit_worker_mode';
@@ -111,6 +110,41 @@ describe('PreToolUse (claude, main thread, mode on)', () => {
       assert.equal(run(dir, preInput(tool)), '', tool);
     }
   });
+});
+
+describe('control tools are runtime-specific; every other name is an ordinary MCP tool', () => {
+  for (const tool of ['mcp__worker__exit_worker_mode', 'mcp__worker__enter_worker_mode', 'mcp__evil__exit_worker_mode']) {
+    test(`claude main thread, mode on: ${tool} is denied`, (t) => {
+      const dir = freshDir(t);
+      turnOn(dir);
+      assert.deepEqual(one(run(dir, preInput(tool))), DENY);
+    });
+  }
+
+  // Neither direction may change the mode: an exit must not turn it off, an enter must not turn it on.
+  for (const [rt, tool] of [
+    ['claude', 'mcp__worker__exit_worker_mode'],
+    ['claude', 'mcp__worker__enter_worker_mode'],
+    ['claude', 'mcp__evil__exit_worker_mode'],
+    ['claude', 'mcp__evil__enter_worker_mode'],
+    ['claude', 'mcp__plugin_other_worker__exit_worker_mode'],
+    ['codex', 'mcp__plugin_worker_worker__exit_worker_mode'],
+    ['codex', 'mcp__plugin_worker_worker__enter_worker_mode'],
+    ['codex', 'mcp__evil__exit_worker_mode'],
+    ['codex', 'mcp__evil__enter_worker_mode'],
+    ['codex', 'mcp__plugin_other_worker__exit_worker_mode'],
+  ]) {
+    test(`${rt}: PostToolUse ${tool} never changes the mode`, (t) => {
+      const dir = freshDir(t);
+      const input = postInput(tool, { reason: '用户要求' });
+      assert.equal(run(dir, input, rt), ''); // mode off: it must not turn on
+      assert.equal(exists(dir), false);
+      turnOn(dir, rt);
+      const before = rawState(dir);
+      assert.equal(run(dir, input, rt), ''); // mode on: it must not turn off
+      assert.equal(rawState(dir), before);
+    });
+  }
 });
 
 describe('PreToolUse (codex)', () => {
@@ -216,14 +250,6 @@ describe('PostToolUse: exit_worker_mode', () => {
     assert.equal(state(dir).on, false);
     assert.equal(state(dir).by, 'model');
     assert.equal(state(dir).notice, 'off');
-  });
-
-  test('claude: plain-name exit (mcp__worker__exit_worker_mode) also acts', (t) => {
-    const dir = freshDir(t);
-    turnOn(dir);
-    const out = one(run(dir, postInput('mcp__worker__exit_worker_mode', { reason: '用户要求' })));
-    assert.equal(out.systemMessage, 'Worker 模式：已由模型关闭');
-    assert.equal(state(dir).on, false);
   });
 
   test('a reason reduced to surrounding whitespace is trimmed and a real reason acts', (t) => {

@@ -47,10 +47,15 @@ function one(stdout) {
 
 const listDir = (dir) => (fs.existsSync(dir) ? fs.readdirSync(dir) : []);
 const prompt = (text, sid = 'sess') => ({ hook_event_name: 'UserPromptSubmit', session_id: sid, prompt: text });
-const enterInput = (sid) => ({
+// Control tool names per runtime: Claude's plugin-scoped names and Codex's plain server names.
+const CONTROL = {
+  claude: { enter: 'mcp__plugin_worker_worker__enter_worker_mode', exit: 'mcp__plugin_worker_worker__exit_worker_mode' },
+  codex: { enter: 'mcp__worker__enter_worker_mode', exit: 'mcp__worker__exit_worker_mode' },
+};
+const enterInput = (sid, runtime = 'claude') => ({
   hook_event_name: 'PostToolUse',
   ...(sid === undefined ? {} : { session_id: sid }),
-  tool_name: 'mcp__worker__enter_worker_mode',
+  tool_name: CONTROL[runtime].enter,
   tool_input: { reason: '测试' },
   tool_response: { isError: false },
 });
@@ -196,7 +201,7 @@ describe('corrupt or empty state file counts as off', () => {
       const exitOut = runDir(dir, {
         hook_event_name: 'PostToolUse',
         session_id: 'sess',
-        tool_name: 'mcp__worker__exit_worker_mode',
+        tool_name: CONTROL.claude.exit,
         tool_input: { reason: '用户要求' },
         tool_response: { isError: false },
       });
@@ -252,6 +257,49 @@ describe('default state directory when WORKER_STATE_DIR is unset', () => {
     assert.equal(r.status, 0, r.stderr);
     assert.ok(fs.existsSync(path.join(home, '.codex', 'worker-mode', 'sess.json')));
   });
+});
+
+describe('state write failure still answers and warns', () => {
+  const OFF_TEXT = 'Worker 模式已关闭。之前注入的总控规则不再适用：你可以直接读写文件、运行命令；需要时仍可派子代理。';
+  // A regular file in place of the state directory makes every write fail (ENOTDIR), even for root.
+  function unwritableDir(t) {
+    const root = mkRoot(t);
+    fs.writeFileSync(path.join(root, 'blocker'), 'a file, not a directory');
+    return path.join(root, 'blocker', 'state');
+  }
+  const warning = (dir) => `Worker 模式：状态无法保存（${dir}），本轮之后可能不会保持`;
+
+  for (const rt of ['claude', 'codex']) {
+    test(`${rt}: ON still injects the rules, sends the warning, and writes nothing`, (t) => {
+      const dir = unwritableDir(t);
+      const r = runWith(cleanEnv({ WORKER_STATE_DIR: dir }), prompt('/worker 任务'), ['--runtime', rt]);
+      assert.equal(r.status, 0, r.stderr);
+      assert.equal(r.stderr.split('\n').filter(Boolean).length, 1, `one stderr line: ${r.stderr}`);
+      const out = one(r.stdout);
+      assert.ok(out.hookSpecificOutput.additionalContext.startsWith('【Worker 模式规则'));
+      assert.equal(out.systemMessage, warning(dir));
+      assert.equal(fs.existsSync(dir), false);
+    });
+
+    test(`${rt}: OFF still answers with the off text and sends the warning`, (t) => {
+      const dir = unwritableDir(t);
+      const r = runWith(cleanEnv({ WORKER_STATE_DIR: dir }), prompt('/worker off'), ['--runtime', rt]);
+      assert.equal(r.status, 0, r.stderr);
+      assert.deepEqual(one(r.stdout), {
+        hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: OFF_TEXT },
+        systemMessage: warning(dir),
+      });
+    });
+
+    test(`${rt}: PostToolUse enter still injects the rules and sends the warning`, (t) => {
+      const dir = unwritableDir(t);
+      const r = runWith(cleanEnv({ WORKER_STATE_DIR: dir }), enterInput('sess', rt), ['--runtime', rt]);
+      assert.equal(r.status, 0, r.stderr);
+      const out = one(r.stdout);
+      assert.ok(out.hookSpecificOutput.additionalContext.startsWith('【Worker 模式规则'));
+      assert.equal(out.systemMessage, warning(dir));
+    });
+  }
 });
 
 describe('no --runtime flag', () => {
