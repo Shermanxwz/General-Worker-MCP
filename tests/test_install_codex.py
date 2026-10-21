@@ -3,6 +3,7 @@
     python3 -m unittest discover -s tests -p 'test_install_codex.py' -v
 """
 import os
+import shutil
 import stat
 import sys
 import unittest
@@ -41,6 +42,17 @@ class InstallTests(CodexTarget):
         self.assertEqual(mode(sb.skill_dst), 0o644)
         for directory in (sb.worker_home / "runtime", sb.worker_home / "rules", sb.skill_dst.parent):
             self.assertEqual(mode(directory), 0o755, directory)
+
+    def test_missing_runtime_sources_are_reported(self):
+        # A checkout without plugins/worker cannot supply the runtime: the step fails and creates nothing.
+        sb = self.sb
+        broken = sb.root / "checkout"
+        shutil.copytree(ROOT / "scripts", broken / "scripts")
+        shutil.copytree(ROOT / "codex", broken / "codex")
+        result = sb.run("install", REPO_DIR=str(broken))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("runtime or rules directory missing", result.stderr)
+        self.assertFalse(sb.worker_home.exists())
 
     def test_requirements_block_and_parent_directory(self):
         sb = self.sb

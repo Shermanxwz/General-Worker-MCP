@@ -46,7 +46,10 @@ copy_one() { # src dst: copy with mode 0644
 }
 
 install_runtime() {
-  [ -d "$RUNTIME_SRC" ] && [ -d "$RULES_SRC" ] || { warn "runtime or rules directory missing under $REPO_DIR"; return 1; }
+  if [ ! -d "$RUNTIME_SRC" ] || [ ! -d "$RULES_SRC" ]; then
+    warn "runtime or rules directory missing under $REPO_DIR"
+    return 1
+  fi
   make_dir "$WORKER_HOME" && make_dir "$WORKER_HOME/runtime" && make_dir "$WORKER_HOME/rules" || return 1
   bad=0
   for n in $(list_names "$RUNTIME_SRC" mjs); do

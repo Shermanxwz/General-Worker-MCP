@@ -30,8 +30,14 @@ jobs:
           package-manager-cache: false
       - name: Install PyYAML
         run: python -m pip install --disable-pip-version-check 'PyYAML==6.0.3'
-      - name: Shell scripts (shellcheck, POSIX sh)
-        run: shellcheck -s sh install.sh scripts/*.sh
+      - name: Shell scripts (shellcheck 0.11.0.1, POSIX sh)
+        run: |
+          set -eu
+          # Pinned from PyPI and run by full path, so the runner's preinstalled shellcheck is never used.
+          sc_dir="$RUNNER_TEMP/shellcheck-0.11.0.1"
+          python -m pip install --disable-pip-version-check --target "$sc_dir" 'shellcheck-py==0.11.0.1'
+          "$sc_dir/bin/shellcheck" --version
+          "$sc_dir/bin/shellcheck" -s sh install.sh scripts/*.sh
       - name: Node module syntax (node --check)
         run: |
           set -eu
