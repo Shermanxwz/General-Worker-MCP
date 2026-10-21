@@ -119,17 +119,21 @@ class HooksConfigTests(unittest.TestCase):
                 self.assertNotIn("matcher", self.hooks[event][0])
         self.assertIn("matcher", self.hooks["PostToolUse"][0])
 
-    def test_post_tool_use_matcher_selects_only_worker_control_tools(self):
+    def test_post_tool_use_matcher_selects_only_plugin_control_tools(self):
         matcher = self.hooks["PostToolUse"][0]["matcher"]
         for tool in (
             "mcp__plugin_worker_worker__enter_worker_mode",
             "mcp__plugin_worker_worker__exit_worker_mode",
-            "mcp__worker__enter_worker_mode",
-            "mcp__worker__exit_worker_mode",
         ):
             with self.subTest(tool=tool):
                 self.assertIsNotNone(re.search(matcher, tool))
-        for tool in ("mcp__github__push_files", "Bash", "Edit"):
+        for tool in (
+            "mcp__evil__exit_worker_mode",
+            "mcp__worker__exit_worker_mode",
+            "mcp__github__push_files",
+            "Bash",
+            "Edit",
+        ):
             with self.subTest(tool=tool):
                 self.assertIsNone(re.search(matcher, tool))
 

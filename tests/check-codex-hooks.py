@@ -38,7 +38,7 @@ def wait_for_reply(lines, req_id, deadline):
         try:
             raw = lines.get(timeout=max(deadline - time.monotonic(), 0))
         except queue.Empty:
-            raise TimeoutError(f"no reply to request {req_id} within {TIMEOUT_S:.0f} s")
+            raise TimeoutError(f"no reply to request {req_id} within {TIMEOUT_S:.0f} s") from None
         if raw is None:
             raise RuntimeError(f"codex app-server exited before replying to request {req_id}")
         try:

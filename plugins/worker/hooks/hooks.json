@@ -35,7 +35,7 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "mcp__.*__(enter|exit)_worker_mode",
+        "matcher": "^mcp__plugin_worker_worker__(enter|exit)_worker_mode$",
         "hooks": [
           {
             "type": "command",
