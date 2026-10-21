@@ -1,0 +1,9 @@
+{
+  "name": "worker",
+  "version": "2.0.0",
+  "description": "Worker 模式（原生子代理版）：开启后主会话只读，修改和命令全部派给子代理。命令：/worker:on、/worker:off、/worker:status。",
+  "author": {
+    "name": "Shermanxwz"
+  },
+  "repository": "https://github.com/Shermanxwz/General-Worker-MCP"
+}
