@@ -218,6 +218,12 @@ async function main() {
   if (out) process.stdout.write(`${JSON.stringify(out)}\n`);
 }
 
+// The reader may close the pipe before the output is written. Nobody is left to read it, so exit 0.
+process.stdout.on('error', (err) => {
+  note(`stdout error: ${err.message}`);
+  process.exit(0);
+});
+
 main().catch((err) => {
   note(`internal error: ${err && err.message ? err.message : String(err)}`);
 });

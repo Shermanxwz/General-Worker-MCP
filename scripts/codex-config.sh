@@ -132,9 +132,17 @@ mcp_run() { # codex mcp <args>; run as the CODEX_HOME owner when we are root
   CODEX_HOME="$CODEX_HOME" "$CODEX_BIN" mcp "$@"
 }
 
-mcp_listed() { # 0 when `codex mcp list` mentions worker
-  out=$(mcp_run list) || return 1
-  printf '%s\n' "$out" | grep -qw worker
+mcp_names() { # prints the name of each server in `codex mcp list --json`, one per line
+  out=$(mcp_run list --json) || return 1
+  printf '%s\n' "$out" | "$NODE_BIN" -e '
+    const list = JSON.parse(require("fs").readFileSync(0, "utf8"));
+    for (const server of list) console.log(server.name);
+  '
+}
+
+mcp_listed() { # 0 when a server is named exactly worker; 1 when none is; 2 when the list cannot be read
+  names=$(mcp_names) || return 2
+  printf '%s\n' "$names" | grep -qx worker
 }
 
 install_mcp() {
@@ -151,11 +159,11 @@ install_mcp() {
 }
 
 remove_mcp() {
-  out=$(mcp_run list) || return 1
-  if printf '%s\n' "$out" | grep -qw worker; then
-    mcp_run remove worker >/dev/null || return 1
-    say "MCP server worker removed"
-  else
-    say "MCP server worker not listed"
-  fi
+  rc=0
+  mcp_listed || rc=$?
+  case $rc in
+    0) mcp_run remove worker >/dev/null || return 1; say "MCP server worker removed" ;;
+    1) say "MCP server worker not listed" ;;
+    *) warn "could not read the MCP server list, so worker was not removed"; return 1 ;;
+  esac
 }

@@ -34,8 +34,12 @@ jobs:
           package-manager-cache: false
       - name: Install test dependencies
         run: python -m pip install --disable-pip-version-check 'PyYAML==6.0.3'
-      - name: Check installer syntax
-        run: sh -n install.sh
+      - name: Check installer and helper script syntax
+        run: |
+          set -eu
+          for script in install.sh scripts/*.sh; do
+            sh -n "$script"
+          done
       - name: Run Node tests (hook and MCP server)
         run: node --test tests/*.test.mjs
       - name: Run Python tests (metadata, installer, probes)
@@ -120,9 +124,8 @@ jobs:
             echo "WORKER_PROJECT=$project_dir"
             echo "CODEX_HOME=$RUNNER_TEMP/codex-home"
             echo "WORKER_HOME=$RUNNER_TEMP/worker-home"
-            echo "CODEX_SKILLS_DIR=$project_dir/.agents/skills"
           } >> "$GITHUB_ENV"
-      - name: Install the Codex target as root with the default requirements file
+      - name: Install the Codex target as root with the default requirements file and skills dir
         run: |
           set -eu
           # The runner image has no /etc/codex; create it the way an admin would.
@@ -133,18 +136,19 @@ jobs:
             CODEX_BIN="$(command -v codex)" \
             CODEX_HOME="$CODEX_HOME" \
             WORKER_HOME="$WORKER_HOME" \
-            CODEX_SKILLS_DIR="$CODEX_SKILLS_DIR" \
             sh install.sh install codex
-      - name: Check the skill with native Codex skills/list (no model calls)
+      - name: Check the admin skill with native Codex skills/list (no model calls)
         run: |
           python tests/check-codex-skills.py --cwd "$WORKER_PROJECT" \
-            --expected-path "$CODEX_SKILLS_DIR/worker/SKILL.md"
-      - name: Check that codex mcp list shows worker
+            --expected-path /etc/codex/skills/worker/SKILL.md
+      - name: Check that codex mcp list --json has a server named exactly worker
         run: |
           set -eu
-          codex mcp list > "$RUNNER_TEMP/mcp-list.txt"
-          cat "$RUNNER_TEMP/mcp-list.txt"
-          grep -qw worker "$RUNNER_TEMP/mcp-list.txt"
+          codex mcp list --json > "$RUNNER_TEMP/mcp-list.json"
+          cat "$RUNNER_TEMP/mcp-list.json"
+          node -e 'const list = JSON.parse(require("fs").readFileSync(0, "utf8")); for (const server of list) console.log(server.name);' \
+            < "$RUNNER_TEMP/mcp-list.json" > "$RUNNER_TEMP/mcp-names.txt"
+          grep -qx worker "$RUNNER_TEMP/mcp-names.txt"
       - name: Check that codex lists the managed worker hook (no model calls)
         run: |
           python tests/check-codex-hooks.py --cwd "$WORKER_PROJECT" \
@@ -157,8 +161,12 @@ jobs:
             CODEX_BIN="$(command -v codex)" \
             CODEX_HOME="$CODEX_HOME" \
             WORKER_HOME="$WORKER_HOME" \
-            CODEX_SKILLS_DIR="$CODEX_SKILLS_DIR" \
             sh install.sh uninstall codex
+
+          if [ -e /etc/codex/skills/worker/SKILL.md ]; then
+            echo "admin skill is still in /etc/codex/skills/worker" >&2
+            exit 1
+          fi
 
           # The managed block must be gone; the file itself may be removed entirely.
           if [ -e /etc/codex/requirements.toml ]; then
@@ -174,8 +182,10 @@ jobs:
             fi
           fi
 
-          codex mcp list > "$RUNNER_TEMP/mcp-after.txt"
-          if grep -qw worker "$RUNNER_TEMP/mcp-after.txt"; then
-            echo "worker is still listed by codex mcp list after uninstall" >&2
+          codex mcp list --json > "$RUNNER_TEMP/mcp-after.json"
+          node -e 'const list = JSON.parse(require("fs").readFileSync(0, "utf8")); for (const server of list) console.log(server.name);' \
+            < "$RUNNER_TEMP/mcp-after.json" > "$RUNNER_TEMP/mcp-after-names.txt"
+          if grep -qx worker "$RUNNER_TEMP/mcp-after-names.txt"; then
+            echo "worker is still listed by codex mcp list --json after uninstall" >&2
             exit 1
           fi

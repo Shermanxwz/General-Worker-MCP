@@ -68,12 +68,17 @@ status_all() {
     report "rules/$n" "$(file_state "$RULES_SRC/$n" "$WORKER_HOME/rules/$n")"
   done
   report "skill" "$(file_state "$SKILL_SRC" "$SKILL_DST")"
-  report "requirements block" "$(block_state)"
-  if mcp_listed; then
-    say "MCP server worker: listed"
-  else
-    report "MCP server worker" "not listed"
+  if [ "$REQ_FILE" != /etc/codex/requirements.toml ]; then
+    warn "CODEX_REQUIREMENTS_FILE is $REQ_FILE, but Codex reads only /etc/codex/requirements.toml; this path is for testing only"
   fi
+  report "requirements block" "$(block_state)"
+  rc=0
+  mcp_listed || rc=$?
+  case $rc in
+    0) say "MCP server worker: listed" ;;
+    1) report "MCP server worker" "not listed" ;;
+    *) report "MCP server worker" "could not list" ;;
+  esac
   return $bad
 }
 

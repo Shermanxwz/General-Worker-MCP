@@ -161,7 +161,7 @@ class UninstallTests(CodexTarget):
         self.assertFalse(sb.req.exists())
         self.assertFalse(sb.skill_dst.parent.exists())
         self.assertFalse(sb.worker_home.exists())
-        self.assertFalse(sb.state.exists())
+        self.assertEqual(sb.servers(), [])
 
     def test_uninstall_keeps_other_content(self):
         sb = self.sb
@@ -171,6 +171,52 @@ class UninstallTests(CodexTarget):
         result = sb.run("uninstall")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(sb.req.read_bytes(), OLD_TOML)
+
+
+class McpTests(CodexTarget):
+    # Another server whose args contain "worker": a substring match on `codex mcp list` would count it.
+    DECOY = ("docs", "/usr/bin/node", ["/srv/worker/tools.mjs"])
+
+    def test_status_does_not_count_a_server_whose_args_contain_worker(self):
+        sb = self.sb
+        sb.seed(self.DECOY)
+        result = sb.run("status")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("MCP server worker: not listed", result.stdout)
+        self.assertNotIn("MCP server worker: listed", result.stdout)
+
+    def test_install_and_uninstall_touch_only_the_worker_entry(self):
+        sb = self.sb
+        sb.seed(self.DECOY)
+        result = sb.run("install")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(sb.servers(), ["docs", "worker"])
+        self.assertIn("MCP server worker: listed", sb.run("status").stdout)
+        result = sb.run("uninstall")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(sb.servers(), ["docs"])
+        self.assertFalse(any(c.startswith("codex mcp remove docs") for c in sb.calls()), sb.calls())
+        self.assertIn("MCP server worker not listed", sb.run("uninstall").stdout)
+
+    def test_unreadable_server_list_is_an_error(self):
+        result = self.sb.run("status", CODEX_HOME=None)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("MCP server worker: could not list", result.stdout)
+
+
+class RequirementsPathTests(CodexTarget):
+    def test_status_warns_when_the_requirements_path_is_not_the_default(self):
+        sb = self.sb
+        sb.run("install")
+        result = sb.run("status")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("CODEX_REQUIREMENTS_FILE is", result.stderr)
+        self.assertIn("Codex reads only /etc/codex/requirements.toml", result.stderr)
+
+    def test_status_has_no_warning_for_the_default_path(self):
+        # Status only reads the default file; nothing is written outside the sandbox.
+        result = self.sb.run("status", CODEX_REQUIREMENTS_FILE=None)
+        self.assertNotIn("Codex reads only", result.stderr)
 
 
 class UsageTests(CodexTarget):

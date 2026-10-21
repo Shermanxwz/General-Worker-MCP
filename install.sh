@@ -27,7 +27,8 @@ Environment variables (default in parentheses):
   CODEX_HOME                 Codex home of the codex web owner (no default; needed by the MCP step)
   WORKER_HOME                runtime install dir (/opt/general-worker-mcp)
   CODEX_SKILLS_DIR           skills dir (/etc/codex/skills)
-  CODEX_REQUIREMENTS_FILE    managed requirements file (/etc/codex/requirements.toml)
+  CODEX_REQUIREMENTS_FILE    managed requirements file (/etc/codex/requirements.toml); for testing only:
+                             Codex reads only /etc/codex/requirements.toml
 
 Exit status: 0 success, 1 a component failed, 2 usage error.
 EOF

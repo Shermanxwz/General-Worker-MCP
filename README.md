@@ -30,7 +30,7 @@ Codex：
 - 开启后，模式在本会话内一直保持，直到关闭。开启期间每条回复都以 `〔Worker 模式〕` 开头。
 - 模型可以自己退出：你要求它停止派发、自己动手时，它调用 `exit_worker_mode`。它认为模式已经没用时，会先问你，你同意后才退出。
 - 子代理的模型和强度：
-  - Claude：在任务里写明，例如 `/worker:on 修复登录，worker 用 haiku，强度 high`。模型可选 sonnet、opus、haiku、fable，强度可选 low、medium、high、xhigh、max。只有你写明时才会传给 `Agent` 工具，否则子代理继承默认值。需要 Claude Code 2.1.292 或更新版本（claude web 固定的 SDK 自带 2.1.295）。
+  - Claude：在任务里写明，例如 `/worker:on 修复登录，worker 用 haiku，强度 high`。模型可选 sonnet、opus、haiku、fable，强度可选 low、medium、high、xhigh、max。只有你写明时才会传给 `Agent` 工具，否则子代理继承默认值。需要 Claude Code 2.1.292 或更新版本（2.1.292 这个下限来自官方 subagent 文档；CI 测试的是 2.1.295，claude web 固定的 SDK 也是 2.1.295）。
   - Codex：`spawn_agent` 不一定支持设置模型和强度。要统一子代理的配置，在 codex web 宿主的 `config.toml` 里设置：
 
 ```toml
@@ -98,7 +98,7 @@ hook 识别以 `/worker`、`@worker` 或 `$worker` 开头的输入，大小写�
 
 - 服务器上的 Node.js 18 或更新版本（`node --version`）。
 - Claude 目标：Claude Code CLI，最好与 claude web 运行的版本一致（固定的 SDK 为 2.1.295）。
-- Codex 目标：codex CLI 0.124 或更新版本（托管 hooks 需要）。CI 测试的是 0.163.0。
+- Codex 目标：codex CLI 0.124 或更新版本。0.124 这个下限（托管 hooks 需要）来自社区资料，没有经过官方文档确认；0.124.0 上 `codex mcp list --json` 和 `codex mcp get` 的行为已在本地确认。CI 只测试 0.163.0。
 
 ### 入口
 
@@ -110,7 +110,7 @@ sh install.sh [install|uninstall|status] [all|claude|codex]
 
 `install.sh` 检查参数和 `NODE_BIN`，然后依次调用 `scripts/claude.sh` 和 `scripts/codex.sh`。`scripts/codex.sh` 再加载两个辅助脚本：`scripts/codex-files.sh` 复制 runtime 和 rules、安装 skill；`scripts/codex-config.sh` 维护 `requirements.toml` 中的托管块，并执行 `codex mcp add` 和 `codex mcp remove`。
 
-仓库目录要放在稳定路径，例如 `/opt/general-worker-mcp-src`。Claude 的插件市场直接从这个目录读取，目录移动后要重新安装。
+仓库目录要放在稳定路径，例如 `/opt/general-worker-mcp-src`。Claude 的插件市场直接从这个目录读取。目录移动后，在新位置重新运行 install 会删除旧市场并从新路径重新添加，插件随之重新安装；status 会报告目录缺失、缺少 `.claude-plugin/marketplace.json` 或来源与 WORKER_MARKETPLACE_SOURCE 不一致。
 
 ### Claude web
 
@@ -123,7 +123,7 @@ sudo -u <服务用户> env HOME=/var/lib/claude-collection-web NODE_BIN=/path/to
 
 这一步会添加插件市场 `general-worker-mcp`，在用户范围安装 `worker@general-worker-mcp`，并删除 v1 的 Claude skill（见“从 v1 升级”）。claude web 会把基础配置中的插件和 settings 链接到每个 collection，新建的 claude web 会话会加载它。
 
-合并到 main 之后，可以改用 GitHub 源，不再依赖本地目录：`WORKER_MARKETPLACE_SOURCE=Shermanxwz/General-Worker-MCP`。
+合并到 main 之后，可以改用 GitHub 源，不再依赖本地目录：`WORKER_MARKETPLACE_SOURCE=Shermanxwz/General-Worker-MCP`。重新运行 install 会把已添加的市场切换到这个源（先删除再添加），status 会报告来源不一致。
 
 ### Codex web
 
@@ -154,9 +154,9 @@ sh install.sh status claude
 sh install.sh uninstall claude
 ```
 
-Codex 的 status 和 uninstall 要带与 install 相同的 `CODEX_HOME`、`NODE_BIN`、`CODEX_BIN`，非默认的 `WORKER_HOME`、`CODEX_SKILLS_DIR`、`CODEX_REQUIREMENTS_FILE` 也要一致，通常用 `sudo env ...`，因为 sudo 会重置 PATH。
+Codex 的 status 和 uninstall 要带与 install 相同的 `CODEX_HOME`、`NODE_BIN`、`CODEX_BIN`，非默认的 `WORKER_HOME`、`CODEX_SKILLS_DIR` 也要一致，通常用 `sudo env ...`，因为 sudo 会重置 PATH。`CODEX_REQUIREMENTS_FILE` 只用于测试：Codex 只读取 `/etc/codex/requirements.toml`，设成其他路径时 status 会打印警告（不影响退出码）。
 
-Codex 卸载会删除托管块（文件只剩空白时整个删除）、MCP 注册、`SKILL.md` 和 `SKILL.md.bak`，以及 runtime 和 rules 文件。
+Codex 卸载会删除托管块（文件只剩空白时整个删除）、名为 `worker` 的 MCP 注册（按名字精确匹配，其他服务器不受影响）、`SKILL.md` 和 `SKILL.md.bak`，以及 runtime 和 rules 文件。
 
 ### 环境变量（来自 `install.sh --help`）
 
@@ -171,7 +171,7 @@ Codex 卸载会删除托管块（文件只剩空白时整个删除）、MCP 注�
 | `CODEX_HOME` | 无默认值；必须是已存在的目录，MCP 步骤必需 | Codex |
 | `WORKER_HOME` | `/opt/general-worker-mcp`，必须是绝对路径 | Codex |
 | `CODEX_SKILLS_DIR` | `/etc/codex/skills` | Codex |
-| `CODEX_REQUIREMENTS_FILE` | `/etc/codex/requirements.toml` | Codex |
+| `CODEX_REQUIREMENTS_FILE` | `/etc/codex/requirements.toml`；仅用于测试，Codex 只读取这个默认路径，设成其他路径时 status 警告 | Codex |
 
 ## 限制与未验证项
 
@@ -181,11 +181,12 @@ Codex 卸载会删除托管块（文件只剩空白时整个删除）、MCP 注�
 - 状态文件的位置依赖 hook 进程继承了 `CLAUDE_CONFIG_DIR` 或 `CODEX_HOME`。如果没有继承，状态会落在 `$HOME` 下的默认目录。这一点还没有在 web 环境里验证；遇到问题时设置 `WORKER_STATE_DIR`。
 - 没有做过真实模型的端到端测试。测试检查文件内容、插件和 skill 的发现、hook 逻辑，不检查模型是否遵守规则。
 - 托管 hooks 需要 root 写入 `/etc/codex/requirements.toml`。不在托管配置里的 hook 需要逐个信任，而 codex web 没有信任界面。
+- Claude 插件的 hooks 和 MCP 服务器分别运行 `node`（见 `plugins/worker/hooks/hooks.json` 和 `plugins/worker/.mcp.json`），它从 claude web 服务的 PATH 里找 node。claude web 提供的 systemd 单元把 Node 所在目录放在 PATH 最前面。因此对 Claude 目标，`NODE_BIN` 只影响安装器自己的检查，不决定插件运行时用哪个 node。这一点按该单元的配置推断，本仓库没有验证。
 
 ## 测试
 
 ```sh
-sh -n install.sh                                           # 安装脚本语法
+for f in install.sh scripts/*.sh; do sh -n "$f"; done      # 安装脚本和 scripts/ 下的辅助脚本语法
 node --test tests/*.test.mjs                               # hook 和 MCP 服务器（Node 22）
 python3 -m unittest discover -s tests -p 'test_*.py' -v    # 元数据、安装脚本、探针（需要 PyYAML）
 ```
@@ -199,9 +200,9 @@ python3 tests/check-codex-hooks.py --cwd <项目目录> --expect /opt/general-wo
 
 GitHub Actions（`.github/workflows/ci.yml`）有三个 job，都不调用模型，也不需要登录：
 
-- `tests`：Python 3.10 和 3.14，Node 22。运行 `sh -n install.sh`、Node 测试和 Python 测试。
+- `tests`：Python 3.10 和 3.14，Node 22。运行 `sh -n`（install.sh 和 scripts/*.sh）、Node 测试和 Python 测试。
 - `claude-plugin`：安装固定版本的 Claude Code 2.1.295，执行 `claude plugin validate .` 和 `claude plugin validate plugins/worker`。然后在临时 HOME 中依次执行 install、status、uninstall，并检查插件出现和消失。
-- `codex`：安装固定版本的 Codex 0.163.0，用 sudo 安装 codex 目标（使用默认的 `/etc/codex/requirements.toml`）。检查 skill 能被发现、`codex mcp list` 中有 `worker`、托管 hook 能被列出，最后卸载并确认托管块已删除。
+- `codex`：安装固定版本的 Codex 0.163.0，用 sudo 安装 codex 目标，使用默认的 `/etc/codex/requirements.toml` 和 `/etc/codex/skills`。检查 `/etc/codex/skills/worker/SKILL.md` 能被 skills/list 发现，`codex mcp list --json` 中有名为 `worker` 的条目（按名字精确匹配），托管 hook 能被列出；最后卸载，并确认托管块、admin skill 和 `worker` 条目都已删除。
 
 ## 给部署它的 AI 的检查清单
 
@@ -217,7 +218,7 @@ GitHub Actions（`.github/workflows/ci.yml`）有三个 job，都不调用模型
    如果提示 `requirements.toml` 已有 hooks，把打印出来的托管块手动合并进去，然后再执行一次。
 6. 验证 Codex：
    `sudo env CODEX_HOME=<宿主 CODEX_HOME> NODE_BIN="$(command -v node)" CODEX_BIN="$(command -v codex)" sh install.sh status codex` 退出码应为 0；
-   `env CODEX_HOME=<宿主 CODEX_HOME> codex mcp list` 中应有 `worker`；
+   `env CODEX_HOME=<宿主 CODEX_HOME> codex mcp list --json` 中应有名为 `worker` 的条目（只看名字；参数里含 worker 的其他服务器不算）；
    `python3 tests/check-codex-hooks.py --expect /opt/general-worker-mcp/runtime/worker-hook.mjs` 退出码应为 0；
    `python3 tests/check-codex-skills.py --expected-path /etc/codex/skills/worker/SKILL.md` 退出码应为 0。
 7. 不需要模型就能测试 hook：
