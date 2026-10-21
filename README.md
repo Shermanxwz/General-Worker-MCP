@@ -75,8 +75,7 @@ hook 识别以 `/worker`、`@worker` 或 `$worker` 开头的输入，大小写�
 
 ### 规则文件
 
-- `plugins/worker/rules/common.md`：两家共用，包括回复标记、总控职责、工作包写法、验收和退出方式。
-- `plugins/worker/rules/claude.md`、`codex.md`：各自的派发工具和命令写法。
+- `plugins/worker/rules/common.md`：两家共用（回复标记、总控职责、工作包写法、验收和退出）；`claude.md`、`codex.md` 是各自的派发工具和命令写法。
 - 每次 hook 调用都会重新读取这三个文件；文件缺失时使用 `worker-hook.mjs` 里的短文本。注入的规则约 800 到 900 个字符。
 
 ### MCP 工具
@@ -109,6 +108,8 @@ sh install.sh [install|uninstall|status] [all|claude|codex]
 
 默认是 `install all`。退出码：0 表示所有请求的步骤都成功；1 表示有步骤失败（其他步骤仍会执行）；2 表示参数错误。`sh install.sh --help` 显示用法。
 
+`install.sh` 检查参数和 `NODE_BIN`，然后依次调用 `scripts/claude.sh` 和 `scripts/codex.sh`。`scripts/codex.sh` 再加载两个辅助脚本：`scripts/codex-files.sh` 复制 runtime 和 rules、安装 skill；`scripts/codex-config.sh` 维护 `requirements.toml` 中的托管块，并执行 `codex mcp add` 和 `codex mcp remove`。
+
 仓库目录要放在稳定路径，例如 `/opt/general-worker-mcp-src`。Claude 的插件市场直接从这个目录读取，目录移动后要重新安装。
 
 ### Claude web
@@ -134,15 +135,15 @@ sudo env CODEX_HOME=<codex web 宿主的 CODEX_HOME> NODE_BIN="$(command -v node
 这一步会写入：
 
 - `$WORKER_HOME`（默认 `/opt/general-worker-mcp`）：`runtime/*.mjs` 和 `rules/*.md`。
-- `/etc/codex/skills/worker/SKILL.md`：管理员 skill，所有 codex web collection 共用。原文件与新内容不同时，先保存为 `SKILL.md.bak`。
-- `/etc/codex/requirements.toml` 中的托管块，由 `# >>> general-worker-mcp (managed by install.sh)` 和 `# <<< general-worker-mcp` 包围，内含 `[hooks]`，`managed_dir` 指向 `$WORKER_HOME`。
-- MCP 注册：`codex mcp add worker -- <NODE_BIN> <WORKER_HOME>/runtime/worker-mcp.mjs`。
+- `/etc/codex/skills/worker/SKILL.md`：管理员 skill，所有 codex web collection 共用。原文件与新内容不同时，先保存为 `SKILL.md.bak`；卸载时这两个文件都会删除。
+- `/etc/codex/requirements.toml` 中的托管块，由 `# >>> general-worker-mcp (managed by install.sh)` 和 `# <<< general-worker-mcp` 包围，内含 `[hooks]`（`managed_dir` 指向 `$WORKER_HOME`），以及 UserPromptSubmit、SessionStart、PostToolUse 三个事件的 command hook。文件或目录不存在时创建。
+- MCP 注册：`codex mcp add worker -- <NODE_BIN> <WORKER_HOME>/runtime/worker-mcp.mjs`。失败时打印等效的 `[mcp_servers.worker]` TOML，供手动添加。
 
 注意：
 
-- `codex mcp` 命令以 `CODEX_HOME` 的所有者身份运行。以 root 运行而 `CODEX_HOME` 属于其他用户时，安装器用 `sudo -u "#<uid>"` 执行；没有 sudo 时这一步失败。
+- `codex mcp` 命令以 `CODEX_HOME` 的所有者身份运行。以 root 运行而 `CODEX_HOME` 属于其他用户时，安装器用 `sudo -u "#<uid>"` 执行；没有 sudo 时这一步失败。`CODEX_HOME` 必须是已存在的目录，否则 MCP 步骤失败。
 - `requirements.toml` 中已经有 hooks 配置（`[hooks]`、`[[hooks.` 或 `hooks =`）时，安装器不覆盖它，这一步失败，并打印托管块，请手动合并后重新执行。
-- `WORKER_HOME` 不能包含空格或引号。
+- `WORKER_HOME` 和 `NODE_BIN` 必须是绝对路径，且不能包含空格或引号；install、uninstall、status 都会检查。
 - 安装后还要在 codex web 中操作：每个 collection 打开“MCP servers…”对话框，勾选 `worker`；然后刷新页面或新开线程。
 
 ### 状态和卸载
@@ -153,7 +154,9 @@ sh install.sh status claude
 sh install.sh uninstall claude
 ```
 
-Codex 的 status 和 uninstall 要带与 install 相同的 `CODEX_HOME`、`NODE_BIN`、`CODEX_BIN`，通常用 `sudo env ...`，因为 sudo 会重置 PATH。
+Codex 的 status 和 uninstall 要带与 install 相同的 `CODEX_HOME`、`NODE_BIN`、`CODEX_BIN`，非默认的 `WORKER_HOME`、`CODEX_SKILLS_DIR`、`CODEX_REQUIREMENTS_FILE` 也要一致，通常用 `sudo env ...`，因为 sudo 会重置 PATH。
+
+Codex 卸载会删除托管块（文件只剩空白时整个删除）、MCP 注册、`SKILL.md` 和 `SKILL.md.bak`，以及 runtime 和 rules 文件。
 
 ### 环境变量（来自 `install.sh --help`）
 
@@ -165,12 +168,10 @@ Codex 的 status 和 uninstall 要带与 install 相同的 `CODEX_HOME`、`NODE_
 | `CLAUDE_CONFIG_DIR` | `$HOME/.claude` | Claude |
 | `CLAUDE_SKILLS_DIR` | `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/skills`，只用于清理 v1 | Claude |
 | `CODEX_BIN` | `codex` | Codex |
-| `CODEX_HOME` | 无默认值，MCP 步骤必需 | Codex |
-| `WORKER_HOME` | `/opt/general-worker-mcp` | Codex |
+| `CODEX_HOME` | 无默认值；必须是已存在的目录，MCP 步骤必需 | Codex |
+| `WORKER_HOME` | `/opt/general-worker-mcp`，必须是绝对路径 | Codex |
 | `CODEX_SKILLS_DIR` | `/etc/codex/skills` | Codex |
 | `CODEX_REQUIREMENTS_FILE` | `/etc/codex/requirements.toml` | Codex |
-
-运行时的 `WORKER_STATE_DIR` 见“状态文件”一节。
 
 ## 限制与未验证项
 
@@ -189,14 +190,12 @@ node --test tests/*.test.mjs                               # hook 和 MCP 服务
 python3 -m unittest discover -s tests -p 'test_*.py' -v    # 元数据、安装脚本、探针（需要 PyYAML）
 ```
 
-两个探针需要本机有 `codex` 命令，并且不会启动模型回合。它们使用临时的 CODEX_HOME，不读取真实的 `~/.codex`：
+两个探针需要本机有 `codex` 命令，并且不会启动模型回合。它们使用临时的 CODEX_HOME，不读取真实的 `~/.codex`；`--cwd` 可以省略，省略时使用临时目录：
 
 ```sh
 python3 tests/check-codex-skills.py --cwd <项目目录> --expected-path /etc/codex/skills/worker/SKILL.md
 python3 tests/check-codex-hooks.py --cwd <项目目录> --expect /opt/general-worker-mcp/runtime/worker-hook.mjs
 ```
-
-`--cwd` 可以省略，省略时使用临时目录。
 
 GitHub Actions（`.github/workflows/ci.yml`）有三个 job，都不调用模型，也不需要登录：
 
@@ -206,7 +205,7 @@ GitHub Actions（`.github/workflows/ci.yml`）有三个 job，都不调用模型
 
 ## 给部署它的 AI 的检查清单
 
-1. 确认环境：`node --version` 应为 18 或更新版本；记下 `command -v claude`、`command -v codex` 的路径；记下 claude web 的服务用户、它的 HOME 和 CLAUDE_CONFIG_DIR，以及 codex web 宿主的 CODEX_HOME。
+1. 确认环境：`node --version` 应为 18 或更新版本；记下 `command -v claude`、`command -v codex` 的路径；记下 claude web 的服务用户、它的 HOME 和 CLAUDE_CONFIG_DIR，以及 codex web 宿主的 CODEX_HOME（必须是已存在的目录）。
 2. 把仓库放到 `/opt/general-worker-mcp-src`，检出分支 `worker-mode-v2`（合并后用 main）。不要修改 claude web 或 codex web 的代码。
 3. Claude web 安装：
    `cd /opt/general-worker-mcp-src && sudo -u <服务用户> env HOME=<服务 HOME> NODE_BIN=<node 绝对路径> CLAUDE_BIN=<claude 绝对路径> sh install.sh install claude`
@@ -240,5 +239,5 @@ echo '{"hook_event_name":"UserPromptSubmit","session_id":"smoke-1","prompt":"@wo
 ## 从 v1 升级
 
 - Claude：`install claude` 会自动删除 v1 的 skill，即 `$CLAUDE_SKILLS_DIR/worker/SKILL.md`（内容含 `has("agent_id")` 的文件），连同 `SKILL.md.bak`；目录为空时也删除。同名文件如果不是 v1 的，保留并给出警告。
-- Codex：`/etc/codex/skills/worker/SKILL.md` 原地替换，旧内容与新内容不同时保存为 `SKILL.md.bak`。
+- Codex：`/etc/codex/skills/worker/SKILL.md` 原地替换，旧内容与新内容不同时保存为 `SKILL.md.bak`；卸载时一并删除。
 - v1 每条消息都要写 `@worker`；v2 开启一次即可，之后每条消息都保持。仓库中的 `claude/` 目录已删除，Claude 版改为插件。
