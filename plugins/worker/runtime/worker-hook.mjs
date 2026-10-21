@@ -4,7 +4,7 @@
 // Reads one hook input object from stdin; writes at most one JSON object to stdout.
 // Fail-open: on any problem stdout stays empty, a one-line note goes to stderr, exit code is 0.
 import { readFileSync } from 'node:fs';
-import { readState, sessionKey, writeState } from './state.mjs';
+import { readState, sessionKey, stateDir, writeState } from './state.mjs';
 
 const HEADER = '【Worker 模式规则（由 hook 注入；开启期间每轮都会出现）】';
 const OFF_TEXT = 'Worker 模式已关闭。之前注入的总控规则不再适用：你可以直接读写文件、运行命令；需要时仍可派子代理。';
@@ -20,19 +20,30 @@ const MSG = {
 // Used only when a rules file is missing or empty.
 const FALLBACK = {
   common: '每条回复以〔Worker 模式〕开头。你是总控：拆分任务、派发给原生子代理、验收结果并汇报；不要自己改文件或运行写入命令。用户要求退出时调用 exit_worker_mode。',
-  claude: '用 Agent 工具派发子代理；主线程的 Edit、Write、Bash、PowerShell 和其他 MCP 工具会被 hook 拦截。',
+  claude: '用 Agent 工具派发子代理；主线程的写入、命令、Worktree、定时、远程触发和其他 MCP 工具会被 hook 拦截。',
   codex: '用 spawn_agent 派发子代理；只做只读检查，不要 apply_patch 或运行写入命令。',
 };
-// Main-thread tools that change files or run commands. Reads, searches and the subagent tools stay allowed.
+// Policy: while the mode is on, the orchestrator may read, dispatch, steer and stop workers, and talk to the user.
+// Tools with side effects are delegated: file and shell writes, background monitors, worktree switches,
+// scheduled runs and remote runs. Every mcp__ tool is blocked too, except the control tools (see isBlockedTool).
 // PowerShell is the Windows counterpart of Bash.
-const BLOCKED_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'Bash', 'PowerShell', 'Monitor']);
-const CONTROL_TOOL_RE = /^mcp__.+__(enter|exit)_worker_mode$/;
-const COMMAND_RE = /^[/@$]worker(?::([A-Za-z_-]+))?(?=\s|$)/i;
-const ACTION_WORDS = new Map([
-  ['off', 'off'], ['关闭', 'off'], ['退出', 'off'],
-  ['status', 'status'], ['状态', 'status'],
-  ['on', 'on'], ['开启', 'on'],
+const BLOCKED_TOOLS = new Set([
+  'Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'Bash', 'PowerShell', 'Monitor',
+  'EnterWorktree', 'ExitWorktree', 'CronCreate', 'CronDelete', 'ScheduleWakeup', 'RemoteTrigger',
 ]);
+// Only these names are control tools: the plugin-scoped name (Claude) and the plain server name (Codex).
+// A look-alike from another server is an ordinary MCP tool: blocked on the main thread, ignored by PostToolUse.
+const CONTROL_TOOL_RE = /^mcp__(plugin_worker_worker|worker)__(enter|exit)_worker_mode$/;
+const COMMAND_RE = /^[/@$]worker(?::([A-Za-z_-]+))?(?=\s|$)/i;
+// Action words, compared after trailing punctuation is stripped. Any other first word is task text, so the mode turns ON.
+const ACTION_WORDS = new Map([
+  ['off', 'off'], ['stop', 'off'], ['关', 'off'], ['关闭', 'off'], ['退出', 'off'], ['停止', 'off'],
+  ['status', 'status'], ['状态', 'status'],
+  ['on', 'on'], ['start', 'on'], ['开', 'on'], ['开启', 'on'],
+]);
+// Namespaces accepted in /worker:<x>. `worker` (the plugin name) is also accepted but carries no action.
+const NAMESPACE_ACTIONS = new Map([['on', 'on'], ['off', 'off'], ['stop', 'off'], ['status', 'status']]);
+const TRAILING_PUNCTUATION_RE = /[.,!?;:。，！？；：、…]+$/;
 const AUTHOR_LABEL = new Map([['user', '用户'], ['model', '模型']]);
 const RULES_DIR = new URL('../rules/', import.meta.url);
 
@@ -75,9 +86,27 @@ function parseCommand(prompt) {
   const match = COMMAND_RE.exec(text);
   if (!match) return null;
   const ns = (match[1] || '').toLowerCase();
-  const first = (text.slice(match[0].length).trim().split(/\s+/)[0] || '').toLowerCase();
-  const word = ACTION_WORDS.has(ns) ? ns : first;
+  // A namespace decides the action by itself. Any other namespace (except the plugin name) is not a worker command.
+  if (ns !== '' && ns !== 'worker') return NAMESPACE_ACTIONS.get(ns) ?? null;
+  const rest = text.slice(match[0].length).trim();
+  const word = (rest.split(/\s+/)[0] || '').replace(TRAILING_PUNCTUATION_RE, '').toLowerCase();
   return ACTION_WORDS.get(word) || 'on';
+}
+
+// Why: the hook still answers when the state cannot be saved. The warning tells the user the mode may not carry over.
+function saveFailedMessage(runtime) {
+  return `Worker 模式：状态无法保存（${stateDir(runtime)}），本轮之后可能不会保持`;
+}
+
+// Returns false when the state file cannot be written. The caller still answers and sends saveFailedMessage().
+function saveState(runtime, sid, state) {
+  try {
+    writeState(runtime, sid, state);
+    return true;
+  } catch (err) {
+    note(`state not saved: ${err.message}`);
+    return false;
+  }
 }
 
 function onUserPromptSubmit(input, runtime) {
@@ -98,18 +127,18 @@ function onUserPromptSubmit(input, runtime) {
       return null;
     }
     if (action === 'on') {
-      writeState(runtime, sid, { on: true, updatedAt: nowIso(), by: 'user', notice: null });
-      return hookOutput('UserPromptSubmit', rulesText(runtime), MSG.onUser);
+      const saved = saveState(runtime, sid, { on: true, updatedAt: nowIso(), by: 'user', notice: null });
+      return hookOutput('UserPromptSubmit', rulesText(runtime), saved ? MSG.onUser : saveFailedMessage(runtime));
     }
-    writeState(runtime, sid, { on: false, updatedAt: nowIso(), by: 'user', notice: null });
-    return hookOutput('UserPromptSubmit', OFF_TEXT, MSG.offUser);
+    const saved = saveState(runtime, sid, { on: false, updatedAt: nowIso(), by: 'user', notice: null });
+    return hookOutput('UserPromptSubmit', OFF_TEXT, saved ? MSG.offUser : saveFailedMessage(runtime));
   }
 
   if (state.on) return hookOutput('UserPromptSubmit', rulesText(runtime));
   // After a model exit, earlier turns still carry the rules, so the next prompt gets the off text once.
   if (state.notice === 'off') {
-    writeState(runtime, sid, { ...state, notice: null });
-    return hookOutput('UserPromptSubmit', OFF_TEXT);
+    const saved = saveState(runtime, sid, { ...state, notice: null });
+    return hookOutput('UserPromptSubmit', OFF_TEXT, saved ? undefined : saveFailedMessage(runtime));
   }
   return null;
 }
@@ -162,12 +191,12 @@ function onPostToolUse(input, runtime) {
   if (name.endsWith('__exit_worker_mode')) {
     const reason = input.tool_input && input.tool_input.reason;
     if (!state.on || !nonEmpty(reason)) return null;
-    writeState(runtime, sid, { on: false, updatedAt: nowIso(), by: 'model', notice: 'off' });
-    return hookOutput('PostToolUse', OFF_TEXT, MSG.offModel);
+    const saved = saveState(runtime, sid, { on: false, updatedAt: nowIso(), by: 'model', notice: 'off' });
+    return hookOutput('PostToolUse', OFF_TEXT, saved ? MSG.offModel : saveFailedMessage(runtime));
   }
   if (state.on) return null;
-  writeState(runtime, sid, { on: true, updatedAt: nowIso(), by: 'model', notice: null });
-  return hookOutput('PostToolUse', rulesText(runtime), MSG.onModel);
+  const saved = saveState(runtime, sid, { on: true, updatedAt: nowIso(), by: 'model', notice: null });
+  return hookOutput('PostToolUse', rulesText(runtime), saved ? MSG.onModel : saveFailedMessage(runtime));
 }
 
 function handle(input, runtime) {

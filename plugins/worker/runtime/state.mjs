@@ -20,7 +20,7 @@ export function sessionKey(sessionId) {
   return text.replace(/[^A-Za-z0-9._-]/g, '_').slice(0, MAX_KEY_LENGTH);
 }
 
-function stateDir(runtime, env = process.env) {
+export function stateDir(runtime, env = process.env) {
   if (env.WORKER_STATE_DIR) return env.WORKER_STATE_DIR;
   const home = env.HOME || homedir();
   if (runtime === 'codex') {
