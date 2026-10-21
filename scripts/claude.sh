@@ -55,7 +55,23 @@ CLAUDE_SKILLS_DIR=${CLAUDE_SKILLS_DIR:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/skill
 V1_DIR=$CLAUDE_SKILLS_DIR/worker
 V1_FILE=$V1_DIR/SKILL.md
 
-list_plugins() { "$CLAUDE_BIN" plugin list 2>&1; }
+# plugin_listing: prints `plugin list`; on failure reports the last lines of the CLI output and fails.
+plugin_listing() {
+  if out=$("$CLAUDE_BIN" plugin list 2>&1); then
+    printf '%s\n' "$out"
+  else
+    fail "plugin list"
+    printf '%s\n' "$out" | tail -n 3 >&2
+    return 1
+  fi
+}
+
+# need_cli: the CLAUDE_BIN command must exist; checked first so that a wrong path is named in the message.
+need_cli() {
+  command -v "$CLAUDE_BIN" >/dev/null 2>&1 && return 0
+  fail "CLAUDE_BIN is not a command: $CLAUDE_BIN (install the claude CLI or set CLAUDE_BIN)"
+  return 1
+}
 
 # market_record: prints "<source> <location>" of the general-worker-mcp marketplace, nothing when it is not
 # added. Status 1 when the listing cannot be read.
@@ -73,7 +89,7 @@ local_dir() {
     "~"/*) p=$HOME/${p#"~/"} ;;
   esac
   if [ -d "$p" ]; then
-    (CDPATH= cd -- "$p" && pwd)
+    (CDPATH='' cd -- "$p" && pwd)
   else
     case $p in
       /* | ./* | ../*) printf '%s\n' "${p%/}" ;;
@@ -122,7 +138,7 @@ install_marketplace() {
 }
 
 install_plugin() {
-  out=$(list_plugins) || { fail "plugin list"; return 1; }
+  out=$(plugin_listing) || return 1
   if has "$out" "$PLUGIN"; then
     run_cli "plugin updated ($PLUGIN)" "plugin update ($PLUGIN)" plugin update "$PLUGIN" --scope user
   else
@@ -155,7 +171,7 @@ cmd_install() {
 
 cmd_uninstall() {
   rc=0
-  out=$(list_plugins) || { fail "plugin list"; return 1; }
+  out=$(plugin_listing) || return 1
   if has "$out" "$PLUGIN"; then
     run_cli "plugin uninstalled ($PLUGIN)" "plugin uninstall ($PLUGIN)" plugin uninstall "$PLUGIN" --scope user || rc=1
   else
@@ -198,7 +214,7 @@ check_marketplace() {
 cmd_status() {
   rc=0
   check_marketplace || rc=1
-  out=$(list_plugins) || { fail "plugin list"; return 1; }
+  out=$(plugin_listing) || return 1
   if has "$out" "$PLUGIN"; then
     say "plugin installed ($PLUGIN)"
   else
@@ -217,6 +233,7 @@ cmd_status() {
   return "$rc"
 }
 
+need_cli || exit 1
 rc=0
 case $ACTION in
   install) cmd_install || rc=1 ;;

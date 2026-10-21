@@ -112,8 +112,9 @@ class Sandbox:
         self.skill_dst = self.skills / "worker" / "SKILL.md"
         self.req = self.root / "etc" / "codex" / "requirements.toml"
 
-    def run(self, action, **overrides):
-        """Run scripts/codex.sh with REPO_DIR, NODE_BIN and the fakes set; None in overrides unsets a variable."""
+    def run(self, action, umask=None, **overrides):
+        """Run scripts/codex.sh with REPO_DIR, NODE_BIN and the fakes set; None in overrides unsets a variable.
+        umask, when given, is the umask the installer runs under."""
         env = dict(os.environ)
         env.update(
             PATH=f"{self.bin}{os.pathsep}{os.environ.get('PATH', '')}",
@@ -132,7 +133,10 @@ class Sandbox:
                 env.pop(key, None)
             else:
                 env[key] = value
-        return subprocess.run(["sh", str(SCRIPT), action], env=env, capture_output=True, text=True)
+        argv = ["sh", str(SCRIPT), action]
+        if umask is not None:
+            argv = ["sh", "-c", f'umask {umask:03o} && exec sh "$0" "$1"', str(SCRIPT), action]
+        return subprocess.run(argv, env=env, capture_output=True, text=True)
 
     def calls(self):
         return self.log.read_text().splitlines() if self.log.exists() else []

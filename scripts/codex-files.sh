@@ -4,15 +4,19 @@
 say() { printf 'codex: %s\n' "$*"; }
 warn() { printf 'codex: %s\n' "$*" >&2; }
 
-# Paths that end up inside generated hook commands must be absolute and free of spaces and quotes.
-plain_path() { # name value
-  case $2 in
-    /*) ;;
-    *) warn "$1 must be an absolute path: $2"; return 1 ;;
-  esac
-  case $2 in
-    *' '*|*'"'*|*"'"*) warn "$1 must not contain spaces or quotes: $2"; return 1 ;;
-  esac
+# path_ok <name> <value>: NODE_BIN and WORKER_HOME are written into hook and MCP commands, so each must be an
+# absolute path of letters, digits and . _ / + - only (no spaces, quotes, backslashes, $ or control characters).
+path_ok() {
+  (
+    LC_ALL=C # the ranges below must mean ASCII only
+    case $2 in /?*) ;; *) exit 1 ;; esac
+    case $2 in *[!A-Za-z0-9._/+-]*) exit 1 ;; esac
+  ) || { warn "$1 must be an absolute path of letters, digits and . _ / + - only: $2"; return 1; }
+}
+
+# make_dir <dir>: creates a missing directory and its parents; the directory itself gets mode 0755.
+make_dir() {
+  [ -d "$1" ] || { mkdir -p "$1" && chmod 0755 "$1"; }
 }
 
 list_names() { # dir ext -> names of the files with that extension
@@ -43,7 +47,7 @@ copy_one() { # src dst: copy with mode 0644
 
 install_runtime() {
   [ -d "$RUNTIME_SRC" ] && [ -d "$RULES_SRC" ] || { warn "runtime or rules directory missing under $REPO_DIR"; return 1; }
-  mkdir -p -m 0755 "$WORKER_HOME/runtime" "$WORKER_HOME/rules" || return 1
+  make_dir "$WORKER_HOME" && make_dir "$WORKER_HOME/runtime" && make_dir "$WORKER_HOME/rules" || return 1
   bad=0
   for n in $(list_names "$RUNTIME_SRC" mjs); do
     copy_one "$RUNTIME_SRC/$n" "$WORKER_HOME/runtime/$n" || bad=1
@@ -67,7 +71,7 @@ remove_files() {
 }
 
 install_skill() {
-  mkdir -p -m 0755 "$(dirname "$SKILL_DST")" || return 1
+  make_dir "$(dirname "$SKILL_DST")" || return 1
   if [ -f "$SKILL_DST" ] && cmp -s "$SKILL_SRC" "$SKILL_DST"; then
     say "skill already up to date"
     return 0

@@ -6,8 +6,9 @@ import os
 import stat
 import sys
 import unittest
+from pathlib import Path
 
-from codex_fakes import FAKE_ID, FAKE_SUDO, RULES_SRC, RUNTIME_SRC, SKILL_SRC, Sandbox, make_fake
+from codex_fakes import FAKE_ID, FAKE_SUDO, ROOT, RULES_SRC, RUNTIME_SRC, SKILL_SRC, Sandbox, make_fake
 
 BEGIN = "# >>> general-worker-mcp (managed by install.sh)"
 END = "# <<< general-worker-mcp"
@@ -51,6 +52,14 @@ class InstallTests(CodexTarget):
         self.assertEqual(mode(sb.req), 0o644)
         self.assertTrue(sb.req.parent.is_dir())
         self.assertEqual(mode(sb.req.parent), 0o755)
+
+    def test_directories_are_0755_under_a_strict_umask(self):
+        sb = self.sb
+        result = sb.run("install", umask=0o077)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for directory in (sb.worker_home, sb.worker_home / "runtime", sb.worker_home / "rules",
+                          sb.skill_dst.parent, sb.req.parent):
+            self.assertEqual(mode(directory), 0o755, directory)
 
     @unittest.skipIf(sys.version_info < (3, 11), "tomllib needs Python 3.11+")
     def test_requirements_parse_as_toml(self):
@@ -125,15 +134,18 @@ class InstallTests(CodexTarget):
         self.assertIn("CODEX_HOME is not set", result.stderr)
         self.assertTrue((self.sb.worker_home / "runtime" / "worker-mcp.mjs").exists())
 
-    def test_worker_home_with_space_or_quote_is_refused(self):
-        for bad in ("with space", 'quo"te'):
-            with self.subTest(bad=bad):
+    def test_unsafe_worker_home_is_refused(self):
+        # WORKER_HOME is written into the hook commands: absolute, letters, digits and . _ / + - only.
+        for label in ("with space", 'quo"te', "back\\slash", "dol$ar", "relative"):
+            with self.subTest(label=label):
                 sb = Sandbox(self)
-                result = sb.run("install", WORKER_HOME=str(sb.root / bad))
+                value = "relative/worker" if label == "relative" else str(sb.root / label)
+                result = sb.run("install", WORKER_HOME=value)
                 self.assertEqual(result.returncode, 1)
-                self.assertIn("spaces or quotes", result.stderr)
-                self.assertFalse((sb.root / bad).exists())
+                self.assertIn("WORKER_HOME must be an absolute path of letters, digits and . _ / + - only", result.stderr)
+                self.assertFalse(Path(value).exists())
                 self.assertFalse(sb.req.exists())
+                self.assertEqual(sb.calls(), [])
 
     def test_root_runs_mcp_as_codex_home_owner(self):
         sb = self.sb
@@ -150,6 +162,24 @@ class InstallTests(CodexTarget):
         self.assertTrue(sudo_calls, calls)
         self.assertTrue(all(c.startswith(f"sudo -u #{owner} ") for c in sudo_calls), sudo_calls)
         self.assertTrue(any(c.endswith(f"CODEX_HOME={sb.codex_home}") for c in calls), calls)
+
+
+class ManagedBlockTests(CodexTarget):
+    def test_block_without_end_marker_is_left_alone(self):
+        # Without the end marker an edit could cut into the content after the start marker, so each step refuses.
+        sb = self.sb
+        sb.req.parent.mkdir(parents=True)
+        damaged = BEGIN + '\n[hooks]\nmanaged_dir = "/elsewhere"\n# keep me\n'
+        sb.req.write_text(damaged)
+        result = sb.run("uninstall")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("no end marker", result.stderr)
+        self.assertEqual(sb.req.read_text(), damaged)
+        result = sb.run("install")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("no end marker", result.stderr)
+        self.assertEqual(sb.req.read_text(), damaged)
+        self.assertIn("requirements block: differs", sb.run("status").stdout)
 
 
 class UninstallTests(CodexTarget):

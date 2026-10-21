@@ -37,7 +37,7 @@ trap 'rm -f "$TMP_BLOCK" "$TMP_OUT"' EXIT
 . "$REPO_DIR/scripts/codex-files.sh"
 . "$REPO_DIR/scripts/codex-config.sh"
 
-plain_path WORKER_HOME "$WORKER_HOME" && plain_path NODE_BIN "$NODE_BIN" || exit 1
+path_ok WORKER_HOME "$WORKER_HOME" && path_ok NODE_BIN "$NODE_BIN" || exit 1
 
 install_all() {
   bad=0
@@ -45,8 +45,10 @@ install_all() {
   install_skill || bad=1
   install_hooks || bad=1
   install_mcp || bad=1
-  say "next: in each codex web collection, check 'worker' in its MCP servers dialog"
-  say "next: refresh codex web or start a new thread"
+  if [ "$bad" -eq 0 ]; then
+    say "next: in each codex web collection, check 'worker' in its MCP servers dialog"
+    say "next: refresh codex web or start a new thread"
+  fi
   return $bad
 }
 

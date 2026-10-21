@@ -44,11 +44,15 @@ block_state() { # managed block in REQ_FILE -> current | differs | missing
   fi
 }
 
+# end_marker_present: an edit of the block needs its end marker, or the edit could cut into the content after it.
+end_marker_present() {
+  grep -qxF "$END_MARK" "$REQ_FILE" && return 0
+  warn "$REQ_FILE has the start marker but no end marker; fix it by hand (nothing changed)"
+  return 1
+}
+
 replace_block() { # swap the existing managed block for the new one, in place
-  if ! grep -qxF "$END_MARK" "$REQ_FILE"; then
-    warn "$REQ_FILE has the start marker but no end marker; fix it by hand"
-    return 1
-  fi
+  end_marker_present || return 1
   awk -v blk="$TMP_BLOCK" -v b="$BEGIN_MARK" -v e="$END_MARK" '
     $0 == b { skip = 1; while ((getline line < blk) > 0) print line; next }
     skip { if ($0 == e) skip = 0; next }
@@ -72,7 +76,7 @@ append_block() { # block after a blank line; the existing bytes stay as they are
 }
 
 install_hooks() {
-  mkdir -p -m 0755 "$(dirname "$REQ_FILE")" || return 1
+  make_dir "$(dirname "$REQ_FILE")" || return 1
   hooks_block > "$TMP_BLOCK" || return 1
   if [ ! -e "$REQ_FILE" ]; then
     cp "$TMP_BLOCK" "$REQ_FILE" && chmod 0644 "$REQ_FILE" || return 1
@@ -93,6 +97,7 @@ remove_hooks() {
     say "no managed hooks in $REQ_FILE"
     return 0
   fi
+  end_marker_present || return 1
   awk -v b="$BEGIN_MARK" -v e="$END_MARK" '
     $0 == b { skip = 1; held = 0; next }
     skip { if ($0 == e) skip = 0; next }
@@ -120,8 +125,11 @@ mcp_run() { # codex mcp <args>; run as the CODEX_HOME owner when we are root
     warn "CODEX_HOME is not set, so '$CODEX_BIN mcp' cannot run; set it to the codex web owner's Codex home"
     return 1
   fi
+  command -v "$CODEX_BIN" >/dev/null 2>&1 || { warn "CODEX_BIN is not a command: $CODEX_BIN"; return 1; }
   [ -d "$CODEX_HOME" ] || { warn "CODEX_HOME is not a directory: $CODEX_HOME"; return 1; }
   if [ "$(id -u)" = 0 ]; then
+    # Only the numeric owner column is read below; no file name is parsed, so the ls warning does not apply.
+    # shellcheck disable=SC2012
     owner=$(ls -ldn "$CODEX_HOME" | awk '{print $3}') || return 1
     if [ "$owner" != 0 ]; then
       command -v sudo >/dev/null 2>&1 || { warn "sudo not found: run the codex target as the CODEX_HOME owner"; return 1; }
@@ -146,10 +154,18 @@ mcp_listed() { # 0 when a server is named exactly worker; 1 when none is; 2 when
 }
 
 install_mcp() {
-  if mcp_listed && ! mcp_run remove worker >/dev/null; then
-    mcp_hint
-    return 1
-  fi
+  rc=0
+  mcp_listed || rc=$?
+  case $rc in
+    0)
+      mcp_run remove worker >/dev/null || { mcp_hint; return 1; } ;;
+    1) ;;
+    *)
+      # Without the list we cannot tell whether worker is registered, so nothing is added.
+      warn "could not read the MCP server list, so worker was not registered"
+      mcp_hint
+      return 1 ;;
+  esac
   if mcp_run add worker -- "$NODE_BIN" "$WORKER_HOME/runtime/worker-mcp.mjs"; then
     say "MCP server worker registered"
   else
@@ -162,7 +178,9 @@ remove_mcp() {
   rc=0
   mcp_listed || rc=$?
   case $rc in
-    0) mcp_run remove worker >/dev/null || return 1; say "MCP server worker removed" ;;
+    0)
+      mcp_run remove worker >/dev/null || { warn "could not remove the worker MCP server"; return 1; }
+      say "MCP server worker removed" ;;
     1) say "MCP server worker not listed" ;;
     *) warn "could not read the MCP server list, so worker was not removed"; return 1 ;;
   esac
