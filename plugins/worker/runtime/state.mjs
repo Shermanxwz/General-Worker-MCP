@@ -8,7 +8,7 @@ import { basename, dirname, join } from 'node:path';
 const VERSION = 1;
 const MAX_KEY_LENGTH = 200;
 
-export function offState() {
+function offState() {
   return { on: false, updatedAt: null, by: null, notice: null };
 }
 
@@ -20,7 +20,7 @@ export function sessionKey(sessionId) {
   return text.replace(/[^A-Za-z0-9._-]/g, '_').slice(0, MAX_KEY_LENGTH);
 }
 
-export function stateDir(runtime, env = process.env) {
+function stateDir(runtime, env = process.env) {
   if (env.WORKER_STATE_DIR) return env.WORKER_STATE_DIR;
   const home = env.HOME || homedir();
   if (runtime === 'codex') {
@@ -29,7 +29,7 @@ export function stateDir(runtime, env = process.env) {
   return join(env.CLAUDE_CONFIG_DIR || join(home, '.claude'), 'worker-mode');
 }
 
-export function statePath(runtime, sessionId, env = process.env) {
+function statePath(runtime, sessionId, env = process.env) {
   const key = sessionKey(sessionId);
   return key === null ? null : join(stateDir(runtime, env), `${key}.json`);
 }
