@@ -31,6 +31,7 @@ const ACTION_WORDS = new Map([
   ['status', 'status'], ['状态', 'status'],
   ['on', 'on'], ['开启', 'on'],
 ]);
+const AUTHOR_LABEL = new Map([['user', '用户'], ['model', '模型']]);
 const RULES_DIR = new URL('../rules/', import.meta.url);
 
 function note(message) {
@@ -83,7 +84,8 @@ function onPrompt(input, runtime) {
 
   if (action === 'status') {
     if (!state.on) return hookOutput('UserPromptSubmit', 'Worker 模式当前：关', MSG.statusOff);
-    const line = `Worker 模式当前：开（${state.by ?? 'unknown'} 于 ${state.updatedAt ?? 'unknown'} 开启）`;
+    const who = AUTHOR_LABEL.get(state.by) ?? '未知';
+    const line = `Worker 模式当前：开（${who} 于 ${state.updatedAt ?? '未知时间'} 开启）`;
     return hookOutput('UserPromptSubmit', `${line}\n${rulesText(runtime)}`, MSG.statusOn);
   }
 
@@ -140,6 +142,7 @@ function postOutput(runtime, additionalContext, systemMessage) {
   return { systemMessage };
 }
 
+// Acts only on real transitions: exit only while ON, enter only while OFF.
 function onPostToolUse(input, runtime) {
   const name = input.tool_name;
   if (typeof name !== 'string' || !CONTROL_TOOL_RE.test(name)) return null;
@@ -150,12 +153,14 @@ function onPostToolUse(input, runtime) {
     note('no session_id: worker mode state is not stored');
     return null;
   }
+  const state = readState(runtime, sid);
   if (name.endsWith('__exit_worker_mode')) {
     const reason = input.tool_input && input.tool_input.reason;
-    if (!nonEmpty(reason)) return null;
+    if (!state.on || !nonEmpty(reason)) return null;
     writeState(runtime, sid, { on: false, updatedAt: nowIso(), by: 'model', notice: 'off' });
     return postOutput(runtime, OFF_TEXT, MSG.offModel);
   }
+  if (state.on) return null;
   writeState(runtime, sid, { on: true, updatedAt: nowIso(), by: 'model', notice: null });
   return postOutput(runtime, rulesText(runtime), MSG.onModel);
 }

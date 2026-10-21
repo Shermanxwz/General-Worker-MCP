@@ -3,3 +3,4 @@ Claude Code 运行时：
 - 只有用户明确指定时才传 model（sonnet、opus、haiku、fable）和 effort（low、medium、high、xhigh、max）；否则两者都不传，让子代理继承默认值。
 - 用 SendMessage 追加指示或要求返回结果，用 TaskStop 停止子代理。
 - 用 Read 核实结果。模式开启时，主线程的 Edit、Write、Bash 和其他 MCP 工具会被 hook 拦截。
+- 用户命令：`/worker:on 任务` 开启，`/worker:off` 关闭（输入 `@worker off` 也可以），`/worker:status` 查看状态。
