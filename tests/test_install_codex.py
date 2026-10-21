@@ -3,8 +3,10 @@
     python3 -m unittest discover -s tests -p 'test_install_codex.py' -v
 """
 import os
+import re
 import shutil
 import stat
+import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -66,12 +68,54 @@ class InstallTests(CodexTarget):
         self.assertEqual(mode(sb.req.parent), 0o755)
 
     def test_directories_are_0755_under_a_strict_umask(self):
+        # The installer creates directories under umask 022, so the parents it creates are 0755 as well.
         sb = self.sb
         result = sb.run("install", umask=0o077)
         self.assertEqual(result.returncode, 0, result.stderr)
-        for directory in (sb.worker_home, sb.worker_home / "runtime", sb.worker_home / "rules",
-                          sb.skill_dst.parent, sb.req.parent):
+        for directory in (sb.root / "opt", sb.worker_home, sb.worker_home / "runtime", sb.worker_home / "rules",
+                          sb.root / "skills", sb.skill_dst.parent, sb.root / "etc", sb.req.parent):
             self.assertEqual(mode(directory), 0o755, directory)
+
+    def test_post_tool_use_matcher_selects_only_the_codex_control_tools(self):
+        self.sb.run("install")
+        found = re.search(r'^matcher = "(.*)"$', self.sb.req.read_text(), re.M)
+        self.assertIsNotNone(found)
+        pattern = found.group(1)
+        self.assertEqual(pattern, "^mcp__worker__(enter|exit)_worker_mode$")
+        for name, expected in (("mcp__worker__enter_worker_mode", True),
+                               ("mcp__worker__exit_worker_mode", True),
+                               ("mcp__plugin_worker_worker__enter_worker_mode", False),
+                               ("mcp__docs__enter_worker_mode", False),
+                               ("mcp__worker__status", False)):
+            with self.subTest(name):
+                self.assertEqual(re.search(pattern, name) is not None, expected)
+
+    def test_install_warns_about_a_non_default_requirements_path(self):
+        result = self.sb.run("install")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Codex reads only /etc/codex/requirements.toml", result.stderr)
+
+    def test_runtime_copy_failure_stops_the_install(self):
+        sb = self.sb
+        (sb.worker_home / "runtime" / "worker-hook.mjs").mkdir(parents=True)  # a directory where the copy goes
+        result = sb.run("install")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("is a directory", result.stderr)
+        self.assertEqual(sb.calls(), [], "hooks and MCP must not be registered")
+        self.assertFalse(sb.req.exists())
+        self.assertFalse(sb.skill_dst.exists())
+
+    def test_missing_entry_file_stops_the_install_before_hooks_and_mcp(self):
+        for entry in ("worker-hook.mjs", "worker-mcp.mjs"):
+            with self.subTest(entry):
+                sb = Sandbox(self)
+                checkout = sb.make_checkout(drop_runtime=(entry,))
+                result = sb.run("install", REPO_DIR=str(checkout))
+                self.assertEqual(result.returncode, 1)
+                self.assertIn(f"{entry} is missing", result.stderr)
+                self.assertEqual(sb.calls(), [], "hooks and MCP must not be registered")
+                self.assertFalse(sb.req.exists())
+                self.assertFalse(sb.skill_dst.exists())
 
     @unittest.skipIf(sys.version_info < (3, 11), "tomllib needs Python 3.11+")
     def test_requirements_parse_as_toml(self):
@@ -87,7 +131,7 @@ class InstallTests(CodexTarget):
             self.assertEqual(handler["type"], "command", event)
             self.assertEqual(handler["command"], command, event)
             self.assertEqual(handler["timeout"], 10, event)
-        self.assertEqual(hooks["PostToolUse"][0]["matcher"], "^mcp__.*__(enter|exit)_worker_mode$")
+        self.assertEqual(hooks["PostToolUse"][0]["matcher"], "^mcp__worker__(enter|exit)_worker_mode$")
 
     def test_reinstall_replaces_block_and_reregisters_mcp(self):
         sb = self.sb
@@ -192,6 +236,96 @@ class ManagedBlockTests(CodexTarget):
         self.assertIn("no end marker", result.stderr)
         self.assertEqual(sb.req.read_text(), damaged)
         self.assertIn("requirements block: differs", sb.run("status").stdout)
+
+
+    def test_hooks_key_inside_another_table_is_allowed(self):
+        sb = self.sb
+        sb.req.parent.mkdir(parents=True)
+        sb.req.write_text("[features]\nhooks = true\n")
+        result = sb.run("install")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        text = sb.req.read_text()
+        self.assertTrue(text.startswith("[features]\nhooks = true\n"))
+        self.assertEqual(text.count(BEGIN), 1)
+
+    @unittest.skipIf(sys.version_info < (3, 11), "tomllib needs Python 3.11+")
+    def test_features_hooks_and_managed_hooks_parse_together(self):
+        import tomllib
+
+        sb = self.sb
+        sb.req.parent.mkdir(parents=True)
+        sb.req.write_text("[features]\nhooks = true\n")
+        self.assertEqual(sb.run("install").returncode, 0)
+        parsed = tomllib.loads(sb.req.read_text())
+        self.assertIs(parsed["features"]["hooks"], True)
+        self.assertEqual(parsed["hooks"]["managed_dir"], str(sb.worker_home))
+
+    def test_hooks_defined_outside_the_managed_block_are_refused(self):
+        managed = f'{BEGIN}\n[hooks]\nmanaged_dir = "/old"\n{END}\n'
+        cases = {
+            "root key": "hooks = true\n",
+            "root dotted key": "hooks.Stop = []\n",
+            "spaced table header": '[ hooks ]\nmanaged_dir = "/x"\n',
+            "array of tables": "[[hooks]]\n",
+            "table after the managed block": managed + "[hooks.Stop]\n",
+        }
+        for label, text in cases.items():
+            with self.subTest(label):
+                sb = Sandbox(self)
+                sb.req.parent.mkdir(parents=True)
+                sb.req.write_text(text)
+                result = sb.run("install")
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn("merge", result.stderr)
+                self.assertEqual(sb.req.read_text(), text)
+
+
+class SkillBackupTests(CodexTarget):
+    def backup(self):
+        return self.sb.skill_dst.with_name("SKILL.md.bak")
+
+    def test_first_original_is_kept_and_uninstall_restores_it(self):
+        sb = self.sb
+        sb.skill_dst.parent.mkdir(parents=True)
+        sb.skill_dst.write_text("old skill\n")
+        self.assertEqual(sb.run("install").returncode, 0)
+        self.assertEqual(self.backup().read_text(), "old skill\n")
+        sb.skill_dst.write_text("edited by hand\n")
+        result = sb.run("install")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("is not the worker skill", result.stderr)
+        self.assertEqual(self.backup().read_text(), "old skill\n", "a later install must not replace the backup")
+        self.assertEqual(sb.skill_dst.read_bytes(), SKILL_SRC.read_bytes())
+        result = sb.run("uninstall")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(sb.skill_dst.read_text(), "old skill\n")
+        self.assertFalse(self.backup().exists())
+        self.assertFalse(sb.skill_dst.with_name("SKILL.md.installed").exists())
+
+    def test_reinstall_over_an_older_copy_of_the_skill_keeps_no_backup(self):
+        sb = self.sb
+        sb.run("install")
+        older = SKILL_SRC.read_bytes() + b"<!-- an older release of this skill -->\n"
+        sb.skill_dst.write_bytes(older)
+        sb.skill_dst.with_name("SKILL.md.installed").write_bytes(older)
+        result = sb.run("install")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(self.backup().exists(), "our own older copy is not an original")
+        self.assertEqual(sb.skill_dst.read_bytes(), SKILL_SRC.read_bytes())
+        result = sb.run("uninstall")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(sb.skill_dst.exists())
+        self.assertFalse(sb.skill_dst.parent.exists())
+
+    def test_uninstall_leaves_a_skill_file_it_did_not_write(self):
+        sb = self.sb
+        sb.run("install")
+        sb.skill_dst.write_text("my own skill\n")
+        result = sb.run("uninstall")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("left in place", result.stderr)
+        self.assertEqual(sb.skill_dst.read_text(), "my own skill\n")
+        self.assertFalse(sb.skill_dst.with_name("SKILL.md.installed").exists())
 
 
 class UninstallTests(CodexTarget):
@@ -309,16 +443,36 @@ class UsageTests(CodexTarget):
 
 
 class ScriptModeTests(unittest.TestCase):
-    def test_installer_files_have_their_packaged_modes(self):
-        executable = ("install.sh", "scripts/claude.sh", "scripts/codex.sh",
-                      "tests/check-codex-skills.py", "tests/check-codex-hooks.py")
-        sourced = ("scripts/codex-files.sh", "scripts/codex-config.sh")
-        for name in executable:
+    """Checks the executable bit and git's recorded mode, not the exact on-disk bits, so any umask passes."""
+
+    EXECUTABLE = ("install.sh", "scripts/claude.sh", "scripts/codex.sh",
+                  "tests/check-codex-skills.py", "tests/check-codex-hooks.py")
+    SOURCED = ("scripts/common.sh", "scripts/codex-files.sh", "scripts/codex-config.sh")
+
+    def recorded_mode(self, name):
+        """The mode git has in its index for the path; None when git is unavailable or the path is not tracked."""
+        try:
+            out = subprocess.run(["git", "-C", str(ROOT), "ls-files", "-s", "--", name],
+                                 capture_output=True, text=True, check=True).stdout
+        except (OSError, subprocess.CalledProcessError):
+            return None
+        return out.split()[0] if out.strip() else None
+
+    def test_executable_files(self):
+        for name in self.EXECUTABLE:
             with self.subTest(name):
-                self.assertEqual(mode(ROOT / name), 0o755)
-        for name in sourced:
+                self.assertTrue(mode(ROOT / name) & stat.S_IXUSR, name)
+                recorded = self.recorded_mode(name)
+                if recorded is not None:
+                    self.assertEqual(recorded, "100755", name)
+
+    def test_sourced_files(self):
+        for name in self.SOURCED:
             with self.subTest(name):
-                self.assertEqual(mode(ROOT / name), 0o644)
+                self.assertFalse(mode(ROOT / name) & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH), name)
+                recorded = self.recorded_mode(name)
+                if recorded is not None:
+                    self.assertEqual(recorded, "100644", name)
 
 
 if __name__ == "__main__":

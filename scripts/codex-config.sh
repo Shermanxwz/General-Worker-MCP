@@ -20,7 +20,7 @@ type = "command"
 command = "$NODE_BIN $WORKER_HOME/runtime/worker-hook.mjs --runtime codex"
 timeout = 10
 [[hooks.PostToolUse]]
-matcher = "^mcp__.*__(enter|exit)_worker_mode\$"
+matcher = "^mcp__worker__(enter|exit)_worker_mode\$"
 [[hooks.PostToolUse.hooks]]
 type = "command"
 command = "$NODE_BIN $WORKER_HOME/runtime/worker-hook.mjs --runtime codex"
@@ -75,18 +75,47 @@ append_block() { # block after a blank line; the existing bytes stay as they are
   say "appended managed hooks to $REQ_FILE"
 }
 
+# hooks_defined_outside: true when REQ_FILE defines hooks outside the managed block. Counted: a [hooks] table, a
+# [hooks.*] or [[hooks.*]] header, and a hooks key or dotted key before the first table header (the root).
+# A hooks key inside another table, such as [features] hooks = true, is not counted. A line that starts with [
+# is taken as a table header.
+hooks_defined_outside() {
+  awk -v b="$BEGIN_MARK" -v e="$END_MARK" '
+    BEGIN { root = 1 }
+    $0 == b { skip = 1; next }
+    skip { if ($0 == e) skip = 0; next }
+    /^[[:space:]]*\[/ {
+      root = 0
+      if ($0 ~ /^[[:space:]]*\[\[?[[:space:]]*"?hooks"?[[:space:]]*[].]/) found = 1
+      next
+    }
+    root && /^[[:space:]]*"?hooks"?[[:space:]]*[=.]/ { found = 1 }
+    END { exit (found ? 0 : 1) }
+  ' "$REQ_FILE"
+}
+
+# requirements_path_note: Codex reads only the default requirements file, so any other path is for testing only.
+requirements_path_note() {
+  if [ "$REQ_FILE" != /etc/codex/requirements.toml ]; then
+    warn "CODEX_REQUIREMENTS_FILE is $REQ_FILE, but Codex reads only /etc/codex/requirements.toml; this path is for testing only"
+  fi
+}
+
 install_hooks() {
   make_dir "$(dirname "$REQ_FILE")" || return 1
   hooks_block > "$TMP_BLOCK" || return 1
   if [ ! -e "$REQ_FILE" ]; then
     cp "$TMP_BLOCK" "$REQ_FILE" && chmod 0644 "$REQ_FILE" || return 1
     say "created $REQ_FILE with the managed hooks"
-  elif grep -qxF "$BEGIN_MARK" "$REQ_FILE"; then
-    replace_block
-  elif grep -Eq '^[[:space:]]*\[hooks\]|^[[:space:]]*\[\[hooks\.|^[[:space:]]*hooks[[:space:]]*=' "$REQ_FILE"; then
+    return 0
+  fi
+  if hooks_defined_outside; then
     warn "$REQ_FILE already defines hooks outside the managed block; merge this block by hand:"
     cat "$TMP_BLOCK" >&2
     return 1
+  fi
+  if grep -qxF "$BEGIN_MARK" "$REQ_FILE"; then
+    replace_block
   else
     append_block
   fi

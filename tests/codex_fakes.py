@@ -153,3 +153,13 @@ class Sandbox:
         if not self.state.exists():
             return []
         return [entry["name"] for entry in json.loads(self.state.read_text())]
+
+    def make_checkout(self, drop_runtime=()):
+        """A copy of the parts of the checkout that the Codex target reads, without the runtime files in drop_runtime."""
+        checkout = self.root / "checkout"
+        shutil.copytree(ROOT / "scripts", checkout / "scripts")
+        shutil.copytree(ROOT / "codex", checkout / "codex")
+        shutil.copytree(RULES_SRC, checkout / "plugins" / "worker" / "rules")
+        shutil.copytree(RUNTIME_SRC, checkout / "plugins" / "worker" / "runtime",
+                        ignore=shutil.ignore_patterns(*drop_runtime))
+        return checkout

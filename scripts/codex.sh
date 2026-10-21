@@ -2,7 +2,7 @@
 # Codex target of the General-Worker-MCP installer, run by install.sh:
 #   sh scripts/codex.sh <install|uninstall|status>
 # Needs REPO_DIR and NODE_BIN (absolute paths) in the environment.
-# Helpers: scripts/codex-files.sh (files, skill) and scripts/codex-config.sh (hooks, MCP).
+# Helpers: scripts/common.sh (path check), scripts/codex-files.sh (files, skill), scripts/codex-config.sh (hooks, MCP).
 set -eu
 
 usage() {
@@ -30,18 +30,23 @@ RUNTIME_SRC=$REPO_DIR/plugins/worker/runtime
 RULES_SRC=$REPO_DIR/plugins/worker/rules
 SKILL_SRC=$REPO_DIR/codex/skills/worker/SKILL.md
 SKILL_DST=$CODEX_SKILLS_DIR/worker/SKILL.md
+SKILL_RECORD=$SKILL_DST.installed
 TMP_BLOCK=$(mktemp)
 TMP_OUT=$(mktemp)
 trap 'rm -f "$TMP_BLOCK" "$TMP_OUT"' EXIT
 
+. "$REPO_DIR/scripts/common.sh"
 . "$REPO_DIR/scripts/codex-files.sh"
 . "$REPO_DIR/scripts/codex-config.sh"
 
 path_ok WORKER_HOME "$WORKER_HOME" && path_ok NODE_BIN "$NODE_BIN" || exit 1
 
 install_all() {
+  requirements_path_note
+  # The runtime comes first: unless both entry files are in place, nothing else is written.
+  install_runtime || return 1
+  runtime_ready || return 1
   bad=0
-  install_runtime || bad=1
   install_skill || bad=1
   install_hooks || bad=1
   install_mcp || bad=1
@@ -70,9 +75,7 @@ status_all() {
     report "rules/$n" "$(file_state "$RULES_SRC/$n" "$WORKER_HOME/rules/$n")"
   done
   report "skill" "$(file_state "$SKILL_SRC" "$SKILL_DST")"
-  if [ "$REQ_FILE" != /etc/codex/requirements.toml ]; then
-    warn "CODEX_REQUIREMENTS_FILE is $REQ_FILE, but Codex reads only /etc/codex/requirements.toml; this path is for testing only"
-  fi
+  requirements_path_note
   report "requirements block" "$(block_state)"
   rc=0
   mcp_listed || rc=$?

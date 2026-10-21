@@ -1,22 +1,13 @@
-# Codex target helpers: messages, path checks, runtime/rules copies and the skill.
+# Codex target helpers: messages, directories, runtime and rules copies, and the skill.
 # Sourced by scripts/codex.sh, which sets the variables used here.
 
 say() { printf 'codex: %s\n' "$*"; }
 warn() { printf 'codex: %s\n' "$*" >&2; }
 
-# path_ok <name> <value>: NODE_BIN and WORKER_HOME are written into hook and MCP commands, so each must be an
-# absolute path of letters, digits and . _ / + - only (no spaces, quotes, backslashes, $ or control characters).
-path_ok() {
-  (
-    LC_ALL=C # the ranges below must mean ASCII only
-    case $2 in /?*) ;; *) exit 1 ;; esac
-    case $2 in *[!A-Za-z0-9._/+-]*) exit 1 ;; esac
-  ) || { warn "$1 must be an absolute path of letters, digits and . _ / + - only: $2"; return 1; }
-}
-
-# make_dir <dir>: creates a missing directory and its parents; the directory itself gets mode 0755.
+# make_dir <dir>: creates the directory and any missing parents. The umask is 022 for this step only, so every
+# directory it creates is 0755, the parents included. An existing directory keeps its mode.
 make_dir() {
-  [ -d "$1" ] || { mkdir -p "$1" && chmod 0755 "$1"; }
+  [ -d "$1" ] || (umask 022 && mkdir -p -- "$1")
 }
 
 list_names() { # dir ext -> names of the files with that extension
@@ -40,9 +31,24 @@ file_state() { # src dst -> current | differs | missing
   fi
 }
 
-copy_one() { # src dst: copy with mode 0644
+copy_one() { # src dst: copy with mode 0644; a directory in the way is an error, not a place for the copy
   [ -f "$1" ] || { warn "missing source file $1"; return 1; }
+  if [ -d "$2" ]; then
+    warn "cannot copy $1: $2 is a directory"
+    return 1
+  fi
   cp "$1" "$2" && chmod 0644 "$2"
+}
+
+# runtime_ready: the hooks and the MCP server run from these two files, so both must be in place before either
+# is registered.
+runtime_ready() {
+  for n in worker-hook.mjs worker-mcp.mjs; do
+    if [ ! -f "$WORKER_HOME/runtime/$n" ]; then
+      warn "$WORKER_HOME/runtime/$n is missing; the hooks and the MCP server were not written"
+      return 1
+    fi
+  done
 }
 
 install_runtime() {
@@ -50,7 +56,7 @@ install_runtime() {
     warn "runtime or rules directory missing under $REPO_DIR"
     return 1
   fi
-  make_dir "$WORKER_HOME" && make_dir "$WORKER_HOME/runtime" && make_dir "$WORKER_HOME/rules" || return 1
+  make_dir "$WORKER_HOME/runtime" && make_dir "$WORKER_HOME/rules" || return 1
   bad=0
   for n in $(list_names "$RUNTIME_SRC" mjs); do
     copy_one "$RUNTIME_SRC/$n" "$WORKER_HOME/runtime/$n" || bad=1
@@ -73,22 +79,51 @@ remove_files() {
   say "runtime and rules files removed"
 }
 
+# skill_is_ours: true when SKILL_DST is still the copy this installer last wrote, which SKILL_RECORD holds.
+skill_is_ours() {
+  [ -f "$SKILL_DST" ] && [ -f "$SKILL_RECORD" ] && cmp -s "$SKILL_DST" "$SKILL_RECORD"
+}
+
+# keep_previous_skill: runs before SKILL_DST is replaced. A file that is not this installer's copy is saved as
+# SKILL_DST.bak, but only when no backup exists yet, so the first original is the one that is kept.
+keep_previous_skill() {
+  [ -f "$SKILL_DST" ] || return 0
+  if skill_is_ours; then
+    return 0
+  fi
+  if [ -e "$SKILL_DST.bak" ]; then
+    warn "$SKILL_DST is not the worker skill and is replaced; the first original stays in $SKILL_DST.bak"
+    return 0
+  fi
+  cp "$SKILL_DST" "$SKILL_DST.bak" || return 1
+  say "previous skill saved as $SKILL_DST.bak; uninstall restores it"
+}
+
 install_skill() {
   make_dir "$(dirname "$SKILL_DST")" || return 1
   if [ -f "$SKILL_DST" ] && cmp -s "$SKILL_SRC" "$SKILL_DST"; then
     say "skill already up to date"
-    return 0
+  else
+    keep_previous_skill || return 1
+    cp "$SKILL_SRC" "$SKILL_DST" && chmod 0644 "$SKILL_DST" || return 1
+    say "skill installed at $SKILL_DST"
   fi
-  if [ -f "$SKILL_DST" ]; then
-    cp "$SKILL_DST" "$SKILL_DST.bak" || return 1
-    say "previous skill saved as $SKILL_DST.bak"
-  fi
-  cp "$SKILL_SRC" "$SKILL_DST" && chmod 0644 "$SKILL_DST" || return 1
-  say "skill installed at $SKILL_DST"
+  cp "$SKILL_SRC" "$SKILL_RECORD" && chmod 0644 "$SKILL_RECORD" || return 1
 }
 
+# remove_skill: restores the backup when there is one; otherwise removes the skill only when it is still ours.
 remove_skill() {
-  rm -f "$SKILL_DST" "$SKILL_DST.bak" || return 1
+  if [ -e "$SKILL_DST.bak" ]; then
+    mv -f "$SKILL_DST.bak" "$SKILL_DST" || return 1
+    say "restored the skill that was there before the install: $SKILL_DST"
+  elif skill_is_ours; then
+    rm -f "$SKILL_DST" || return 1
+    say "skill file removed: $SKILL_DST"
+  elif [ -f "$SKILL_DST" ]; then
+    warn "$SKILL_DST is not the worker skill; left in place"
+  else
+    say "no worker skill file to remove"
+  fi
+  rm -f "$SKILL_RECORD" || return 1
   rmdir "$(dirname "$SKILL_DST")" 2>/dev/null || true
-  say "skill files removed"
 }

@@ -49,6 +49,11 @@ if [ -z "${REPO_DIR:-}" ] || [ -z "${NODE_BIN:-}" ]; then
   echo "claude: REPO_DIR and NODE_BIN must be set; run install.sh instead" >&2
   exit 1
 fi
+# Install and uninstall write the Claude config of the user who runs them; as root that is root's, which the
+# claude web service user does not read.
+if [ "$ACTION" != status ] && [ "$(id -u)" = 0 ]; then
+  warn "running as root: this changes root's Claude config, not the claude web user's; run $ACTION as that user"
+fi
 CLAUDE_BIN=${CLAUDE_BIN:-claude}
 WORKER_MARKETPLACE_SOURCE=${WORKER_MARKETPLACE_SOURCE:-$REPO_DIR}
 CLAUDE_SKILLS_DIR=${CLAUDE_SKILLS_DIR:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/skills}

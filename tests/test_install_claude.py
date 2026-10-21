@@ -13,7 +13,7 @@ MARKET = "general-worker-mcp"
 V1_MARKER = 'has("agent_id")'
 REAL_NODE = shutil.which("node") or ""
 STRIPPED = ("CLAUDE_BIN", "WORKER_MARKETPLACE_SOURCE", "CLAUDE_SKILLS_DIR", "CLAUDE_CONFIG_DIR",
-            "FAKE_CLAUDE_FAIL", "FAKE_CLAUDE_KEEP_PLUGINS", "NODE_BIN")
+            "FAKE_CLAUDE_FAIL", "FAKE_CLAUDE_KEEP_PLUGINS", "NODE_BIN", "FAKE_UID")
 
 # Fake claude: logs its argv. State in $FAKE_CLAUDE_STATE: plugins (one id per line) and markets.json, the
 # marketplace as `plugin marketplace list --json` lists it (absent when none is added). As in the CLI, a folder
@@ -85,6 +85,8 @@ class ClaudeTargetTest(unittest.TestCase):
         self.state.mkdir(parents=True)
         write_exec(self.bin / "claude", FAKE_CLAUDE)
         node = write_exec(self.bin / "node", FAKE_NODE % ("v22.0.0", REAL_NODE))
+        # The uid the script sees: 1000 unless a test sets FAKE_UID, so the suite passes as root too.
+        write_exec(self.bin / "id", '#!/bin/sh\necho "${FAKE_UID:-1000}"\n')
         self.env = {k: v for k, v in os.environ.items() if k not in STRIPPED}
         self.env.update(
             PATH=f"{self.bin}{os.pathsep}{os.environ.get('PATH', '')}",
@@ -235,6 +237,18 @@ class ClaudeTargetTest(unittest.TestCase):
         self.assertEqual(r.returncode, 1)
         self.assertIn("failed: plugin list", r.stderr)
         self.assertIn("fake failure", r.stderr)
+
+    def test_install_and_uninstall_as_root_warn_that_root_config_is_written(self):
+        r = self.install(FAKE_UID="0")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("running as root", r.stderr)
+        r = self.sh("uninstall", "claude", FAKE_UID="0")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("running as root", r.stderr)
+
+    def test_no_root_warning_for_a_normal_user_or_for_status(self):
+        self.assertNotIn("running as root", self.install().stderr)
+        self.assertNotIn("running as root", self.sh("status", "claude", FAKE_UID="0").stderr)
 
     def test_defaults_follow_environment(self):
         d = self.skills / "worker"

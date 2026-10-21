@@ -35,10 +35,10 @@ Exit status: 0 success, 1 a component failed, 2 usage error.
 EOF
 }
 
-err() { printf 'install.sh: %s\n' "$*" >&2; }
+warn() { printf 'install.sh: %s\n' "$*" >&2; }
 
 usage_error() {
-  err "$1"
+  warn "$1"
   usage >&2
   exit 2
 }
@@ -66,17 +66,9 @@ case $0 in
   */*) dir=${0%/*} ;;
   *) dir=. ;;
 esac
-REPO_DIR=$(CDPATH='' cd "$dir" && pwd) || { err "cannot resolve the checkout directory"; exit 1; }
-
-# path_ok <name> <value>: NODE_BIN and WORKER_HOME are written into hook and MCP commands, so each must be an
-# absolute path of letters, digits and . _ / + - only (no spaces, quotes, backslashes, $ or control characters).
-path_ok() {
-  (
-    LC_ALL=C # the ranges below must mean ASCII only
-    case $2 in /?*) ;; *) exit 1 ;; esac
-    case $2 in *[!A-Za-z0-9._/+-]*) exit 1 ;; esac
-  ) || { err "$1 must be an absolute path of letters, digits and . _ / + - only: $2"; return 1; }
-}
+REPO_DIR=$(CDPATH='' cd "$dir" && pwd) || { warn "cannot resolve the checkout directory"; exit 1; }
+[ -f "$REPO_DIR/scripts/common.sh" ] || { warn "scripts/common.sh is missing under $REPO_DIR"; exit 1; }
+. "$REPO_DIR/scripts/common.sh"
 
 # check_node: sets NODE_BIN to the node the targets use, or reports why none is usable (return 1).
 check_node() {
@@ -85,22 +77,22 @@ check_node() {
     n=$(command -v node 2>/dev/null) || n=
   fi
   if [ -z "$n" ]; then
-    err "NODE_BIN: no node on PATH; set NODE_BIN to the absolute path of node 22 or newer"
+    warn "NODE_BIN: no node on PATH; set NODE_BIN to the absolute path of node 22 or newer"
     return 1
   fi
   path_ok NODE_BIN "$n" || return 1
   if [ ! -f "$n" ] || [ ! -x "$n" ]; then
-    err "NODE_BIN is not an executable file: $n"
+    warn "NODE_BIN is not an executable file: $n"
     return 1
   fi
   v=$("$n" --version 2>/dev/null) || v=
   major=${v#v}
   major=${major%%.*}
   case $major in
-    '' | *[!0-9]*) err "NODE_BIN $n did not report a version"; return 1 ;;
+    '' | *[!0-9]*) warn "NODE_BIN $n did not report a version"; return 1 ;;
   esac
   if [ "$major" -lt 22 ]; then
-    err "NODE_BIN $n reports $v; node 22 or newer is required"
+    warn "NODE_BIN $n reports $v; node 22 or newer is required"
     return 1
   fi
   NODE_BIN=$n
@@ -116,7 +108,7 @@ if check_node; then
   case $TARGET in all | codex) sh "$REPO_DIR/scripts/codex.sh" "$ACTION" || rc=1 ;; esac
 else
   rc=1
-  case $TARGET in all | claude) err "claude: failed, not run because NODE_BIN is invalid" ;; esac
-  case $TARGET in all | codex) err "codex: failed, not run because NODE_BIN is invalid" ;; esac
+  case $TARGET in all | claude) warn "claude: failed, not run because NODE_BIN is invalid" ;; esac
+  case $TARGET in all | codex) warn "codex: failed, not run because NODE_BIN is invalid" ;; esac
 fi
 exit "$rc"
