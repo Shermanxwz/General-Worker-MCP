@@ -5,13 +5,28 @@
 #
 # Needs REPO_DIR and NODE_BIN from install.sh. Optional environment (defaults in parentheses):
 #   CLAUDE_BIN                 claude CLI (claude)
-#   WORKER_MARKETPLACE_SOURCE  marketplace source ($REPO_DIR)
+#   WORKER_MARKETPLACE_SOURCE  marketplace source: a folder, or owner/repo ($REPO_DIR)
 #   CLAUDE_SKILLS_DIR          skills dir for the v1 cleanup (${CLAUDE_CONFIG_DIR:-$HOME/.claude}/skills)
 set -eu
 
 MARKET=general-worker-mcp
 PLUGIN=worker@general-worker-mcp
 V1_MARKER='has("agent_id")'
+
+# Reads `plugin marketplace list --json` on stdin. Prints "<source> <location>" for the marketplace named
+# argv[1] (its folder for a directory source, else repo or url, with @ref), or nothing when it is not added.
+MARKET_JS='
+const fs = require("fs");
+let list;
+try { list = JSON.parse(fs.readFileSync(0, "utf8")); } catch (e) { process.exit(1); }
+if (!Array.isArray(list)) process.exit(1);
+const m = list.find((e) => e && e.name === process.argv[1]);
+if (m) {
+  const at = m.ref ? "@" + m.ref : "";
+  const where = m.source === "directory" ? m.path : (m.repo || m.url || "") + at;
+  process.stdout.write(m.source + " " + where + "\n");
+}
+'
 
 say() { printf 'claude: %s\n' "$*"; }
 fail() { printf 'claude: failed: %s\n' "$*" >&2; }
@@ -41,36 +56,77 @@ V1_DIR=$CLAUDE_SKILLS_DIR/worker
 V1_FILE=$V1_DIR/SKILL.md
 
 list_plugins() { "$CLAUDE_BIN" plugin list 2>&1; }
-list_markets() { "$CLAUDE_BIN" plugin marketplace list 2>&1; }
 
-# run_cli <label> <args...>: runs one claude command and prints one line for the step.
-run_cli() {
-  label=$1
-  shift
-  if out=$("$CLAUDE_BIN" "$@" 2>&1); then
-    say "$label"
+# market_record: prints "<source> <location>" of the general-worker-mcp marketplace, nothing when it is not
+# added. Status 1 when the listing cannot be read.
+market_record() {
+  out=$("$CLAUDE_BIN" plugin marketplace list --json 2>/dev/null) || return 1
+  printf '%s\n' "$out" | "$NODE_BIN" -e "$MARKET_JS" "$MARKET"
+}
+
+# local_dir <source>: the absolute folder a local source names, without trailing slash, the form the CLI
+# records. Status 1 for a remote source such as owner/repo.
+local_dir() {
+  p=$1
+  case $p in
+    "~") p=$HOME ;;
+    "~"/*) p=$HOME/${p#"~/"} ;;
+  esac
+  if [ -d "$p" ]; then
+    (CDPATH= cd -- "$p" && pwd)
   else
-    fail "$label"
+    case $p in
+      /* | ./* | ../*) printf '%s\n' "${p%/}" ;;
+      *) return 1 ;;
+    esac
+  fi
+}
+
+has_manifest() { [ -f "$1/.claude-plugin/marketplace.json" ]; }
+
+# run_cli <done> <action> <args...>: runs one claude command. Prints <done> on success; on failure prints
+# "failed: <action>" and the last lines of its output.
+run_cli() {
+  done_label=$1
+  action=$2
+  shift 2
+  if out=$("$CLAUDE_BIN" "$@" 2>&1); then
+    say "$done_label"
+  else
+    fail "$action"
     printf '%s\n' "$out" | tail -n 3 >&2
     return 1
   fi
 }
 
 install_marketplace() {
-  out=$(list_markets) || { fail "marketplace list"; return 1; }
-  if has "$out" "$MARKET"; then
-    run_cli "marketplace updated ($MARKET)" plugin marketplace update "$MARKET"
+  if want=$(local_dir "$WORKER_MARKETPLACE_SOURCE"); then
+    has_manifest "$want" || { fail "marketplace source $want has no .claude-plugin/marketplace.json"; return 1; }
   else
-    run_cli "marketplace added ($WORKER_MARKETPLACE_SOURCE)" plugin marketplace add "$WORKER_MARKETPLACE_SOURCE"
+    want=$WORKER_MARKETPLACE_SOURCE
+  fi
+  rec=$(market_record) || { fail "marketplace list"; return 1; }
+  if [ -z "$rec" ]; then
+    run_cli "marketplace added ($WORKER_MARKETPLACE_SOURCE)" "marketplace add ($WORKER_MARKETPLACE_SOURCE)" \
+      plugin marketplace add "$WORKER_MARKETPLACE_SOURCE"
+  elif [ "${rec#* }" = "$want" ]; then
+    run_cli "marketplace updated ($MARKET)" "marketplace update ($MARKET)" plugin marketplace update "$MARKET"
+  else
+    # The CLI keeps one source per marketplace name: remove it (its plugin goes too) and add it again.
+    say "marketplace source changed from ${rec#* } to $want"
+    run_cli "marketplace removed ($MARKET)" "marketplace remove ($MARKET)" plugin marketplace remove "$MARKET" \
+      || return 1
+    run_cli "marketplace added ($WORKER_MARKETPLACE_SOURCE)" "marketplace add ($WORKER_MARKETPLACE_SOURCE)" \
+      plugin marketplace add "$WORKER_MARKETPLACE_SOURCE"
   fi
 }
 
 install_plugin() {
   out=$(list_plugins) || { fail "plugin list"; return 1; }
   if has "$out" "$PLUGIN"; then
-    run_cli "plugin updated ($PLUGIN)" plugin update "$PLUGIN" --scope user
+    run_cli "plugin updated ($PLUGIN)" "plugin update ($PLUGIN)" plugin update "$PLUGIN" --scope user
   else
-    run_cli "plugin installed ($PLUGIN, user scope)" plugin install "$PLUGIN" --scope user
+    run_cli "plugin installed ($PLUGIN, user scope)" "plugin install ($PLUGIN)" plugin install "$PLUGIN" --scope user
   fi
 }
 
@@ -101,22 +157,47 @@ cmd_uninstall() {
   rc=0
   out=$(list_plugins) || { fail "plugin list"; return 1; }
   if has "$out" "$PLUGIN"; then
-    run_cli "plugin uninstalled ($PLUGIN)" plugin uninstall "$PLUGIN" --scope user || rc=1
+    run_cli "plugin uninstalled ($PLUGIN)" "plugin uninstall ($PLUGIN)" plugin uninstall "$PLUGIN" --scope user || rc=1
   else
     say "plugin not installed, nothing to uninstall"
   fi
-  out=$(list_markets) || { fail "marketplace list"; return 1; }
-  if has "$out" "$MARKET"; then
-    run_cli "marketplace removed ($MARKET)" plugin marketplace remove "$MARKET" || rc=1
+  rec=$(market_record) || { fail "marketplace list"; return 1; }
+  if [ -n "$rec" ]; then
+    run_cli "marketplace removed ($MARKET)" "marketplace remove ($MARKET)" plugin marketplace remove "$MARKET" || rc=1
   else
     say "marketplace not added, nothing to remove"
   fi
   return "$rc"
 }
 
-# cmd_status: exit 0 only when the plugin is listed and no worker skill file remains.
+# check_marketplace: the marketplace must be added from WORKER_MARKETPLACE_SOURCE, and a folder source must
+# still hold its manifest (a moved or edited checkout fails here).
+check_marketplace() {
+  rec=$(market_record) || { fail "marketplace list"; return 1; }
+  if [ -z "$rec" ]; then
+    say "marketplace not added ($MARKET)"
+    return 1
+  fi
+  kind=${rec%% *}
+  where=${rec#* }
+  want=$(local_dir "$WORKER_MARKETPLACE_SOURCE" 2>/dev/null) || want=$WORKER_MARKETPLACE_SOURCE
+  rc=0
+  if [ "$where" != "$want" ]; then
+    say "marketplace added from $where, not WORKER_MARKETPLACE_SOURCE ($want); run install to switch"
+    rc=1
+  fi
+  if [ "$kind" = directory ] && ! has_manifest "$where"; then
+    say "marketplace folder has no .claude-plugin/marketplace.json: $where"
+    rc=1
+  fi
+  if [ "$rc" -eq 0 ]; then say "marketplace added ($where)"; fi
+  return "$rc"
+}
+
+# cmd_status: exit 0 only when the marketplace and plugin are in place and no worker skill file remains.
 cmd_status() {
   rc=0
+  check_marketplace || rc=1
   out=$(list_plugins) || { fail "plugin list"; return 1; }
   if has "$out" "$PLUGIN"; then
     say "plugin installed ($PLUGIN)"

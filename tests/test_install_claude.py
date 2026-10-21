@@ -1,4 +1,5 @@
 """Tests for the Claude target of install.sh (scripts/claude.sh) against fake claude and node CLIs."""
+import json
 import os
 import shutil
 import subprocess
@@ -10,33 +11,57 @@ ROOT = Path(os.path.abspath(__file__)).parent.parent
 PLUGIN = "worker@general-worker-mcp"
 MARKET = "general-worker-mcp"
 V1_MARKER = 'has("agent_id")'
+REAL_NODE = shutil.which("node") or ""
 STRIPPED = ("CLAUDE_BIN", "WORKER_MARKETPLACE_SOURCE", "CLAUDE_SKILLS_DIR", "CLAUDE_CONFIG_DIR",
-            "FAKE_CLAUDE_FAIL", "NODE_BIN")
+            "FAKE_CLAUDE_FAIL", "FAKE_CLAUDE_KEEP_PLUGINS", "NODE_BIN")
 
-# Fake claude: logs its argv; marketplace and plugin names are kept one per line in $FAKE_CLAUDE_STATE.
+# Fake claude: logs its argv. State in $FAKE_CLAUDE_STATE: plugins (one id per line) and markets.json, the
+# marketplace as `plugin marketplace list --json` lists it (absent when none is added). As in the CLI, a folder
+# source is recorded as {"source": "directory", "path": <absolute folder>} and owner/repo as
+# {"source": "github", "repo": ...}; adding a folder without a manifest fails; removing a marketplace removes
+# its plugins unless FAKE_CLAUDE_KEEP_PLUGINS is set.
 FAKE_CLAUDE = """#!/bin/sh
 echo "$*" >> "$FAKE_CLAUDE_LOG"
 S=$FAKE_CLAUDE_STATE
-touch "$S/markets" "$S/plugins"
-has() { grep -Fqx "$2" "$S/$1"; }
-[ "${FAKE_CLAUDE_FAIL-}" != "$1 $2" ] || { echo "fake failure" >&2; exit 1; }
+touch "$S/plugins"
+has_plugin() { grep -Fqx "$1" "$S/plugins"; }
+has_market() { [ -f "$S/markets.json" ]; }
+add_market() {
+  src=$1
+  case $src in "~/"*) src=$HOME/${src#"~/"} ;; esac
+  if [ -d "$src" ]; then
+    [ -f "$src/.claude-plugin/marketplace.json" ] || { echo "Marketplace file not found" >&2; exit 1; }
+    p=$(cd "$src" && pwd)
+    printf '[{"name":"general-worker-mcp","source":"directory","path":"%s","installLocation":"%s"}]' "$p" "$p" > "$S/markets.json"
+  else
+    case $src in /* | ./* | ../*) echo "Marketplace path not found: $src" >&2; exit 1 ;; esac
+    printf '[{"name":"general-worker-mcp","source":"github","repo":"%s","installLocation":"/cache"}]' "$src" > "$S/markets.json"
+  fi
+}
+if [ -n "${FAKE_CLAUDE_FAIL-}" ]; then
+  case "$*" in
+    "$FAKE_CLAUDE_FAIL" | "$FAKE_CLAUDE_FAIL "*) echo "fake failure" >&2; exit 1 ;;
+  esac
+fi
 case "$*" in
   "plugin list") cat "$S/plugins" ;;
-  "plugin marketplace list") cat "$S/markets" ;;
-  "plugin marketplace add "*) has markets general-worker-mcp && exit 1; echo general-worker-mcp >> "$S/markets" ;;
-  "plugin marketplace update general-worker-mcp") has markets general-worker-mcp || exit 1 ;;
-  "plugin marketplace remove general-worker-mcp") has markets general-worker-mcp || exit 1
-    grep -vFx general-worker-mcp "$S/markets" > "$S/m.tmp"; mv "$S/m.tmp" "$S/markets" ;;
-  "plugin install "*) has markets general-worker-mcp && ! has plugins "$3" || exit 1; echo "$3" >> "$S/plugins" ;;
-  "plugin update "*) has plugins "$3" || exit 1 ;;
-  "plugin uninstall "*) has plugins "$3" || exit 1
+  "plugin marketplace list --json") if has_market; then cat "$S/markets.json"; else echo "[]"; fi ;;
+  "plugin marketplace add "*) has_market && exit 1; add_market "$4" ;;
+  "plugin marketplace update general-worker-mcp") has_market || exit 1 ;;
+  "plugin marketplace remove general-worker-mcp") has_market || exit 1
+    rm -f "$S/markets.json"
+    [ -n "${FAKE_CLAUDE_KEEP_PLUGINS-}" ] || : > "$S/plugins" ;;
+  "plugin install "*) has_market && ! has_plugin "$3" || exit 1; echo "$3" >> "$S/plugins" ;;
+  "plugin update "*) has_plugin "$3" || exit 1 ;;
+  "plugin uninstall "*) has_plugin "$3" || exit 1
     grep -vFx "$3" "$S/plugins" > "$S/p.tmp"; mv "$S/p.tmp" "$S/plugins" ;;
   *) exit 2 ;;
 esac
 """
 
-# Fake node: answers --version with the version it was written with.
-FAKE_NODE = "#!/bin/sh\ncase $1 in --version) echo %s ;; esac\n"
+# Fake node: answers --version with the version it was written with; every other call runs the real node,
+# which claude.sh uses to read the marketplace listing.
+FAKE_NODE = '#!/bin/sh\ncase $1 in --version) echo %s ;; *) exec "%s" "$@" ;; esac\n'
 
 
 def write_exec(path, text):
@@ -48,6 +73,8 @@ def write_exec(path, text):
 
 class ClaudeTargetTest(unittest.TestCase):
     def setUp(self):
+        if not REAL_NODE:
+            self.fail("node must be on PATH: claude.sh reads the marketplace listing with it")
         self.tmp = Path(tempfile.mkdtemp(prefix="claude-target-"))
         self.addCleanup(shutil.rmtree, self.tmp, True)
         self.bin = self.tmp / "bin"
@@ -57,7 +84,7 @@ class ClaudeTargetTest(unittest.TestCase):
         self.log = self.tmp / "claude.log"
         self.state.mkdir(parents=True)
         write_exec(self.bin / "claude", FAKE_CLAUDE)
-        node = write_exec(self.bin / "node", FAKE_NODE % "v22.0.0")
+        node = write_exec(self.bin / "node", FAKE_NODE % ("v22.0.0", REAL_NODE))
         self.env = {k: v for k, v in os.environ.items() if k not in STRIPPED}
         self.env.update(
             PATH=f"{self.bin}{os.pathsep}{os.environ.get('PATH', '')}",
@@ -74,24 +101,42 @@ class ClaudeTargetTest(unittest.TestCase):
         return subprocess.run(["sh", str(ROOT / "install.sh"), *args], cwd=self.tmp,
                               env={**self.env, **env}, capture_output=True, text=True, timeout=60)
 
-    def install(self):
-        return self.sh("install", "claude")
+    def install(self, **env):
+        return self.sh("install", "claude", **env)
+
+    def status(self, **env):
+        return self.sh("status", "claude", **env)
 
     def calls(self):
         return self.log.read_text().splitlines() if self.log.exists() else []
 
+    def market(self):
+        """The marketplace as the fake CLI lists it (`plugin marketplace list --json`), None when not added."""
+        f = self.state / "markets.json"
+        return json.loads(f.read_text())[0] if f.exists() else None
+
+    def folder(self, name, manifest=True):
+        """A folder under the test directory, with a marketplace manifest unless manifest is False."""
+        d = self.tmp / name
+        d.mkdir(parents=True, exist_ok=True)
+        if manifest:
+            (d / ".claude-plugin").mkdir(exist_ok=True)
+            (d / ".claude-plugin" / "marketplace.json").write_text("{}")
+        return d
+
     def test_install_adds_marketplace_then_installs_plugin(self):
         r = self.install()
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(self.calls(), ["plugin marketplace list", f"plugin marketplace add {ROOT}",
+        self.assertEqual(self.calls(), ["plugin marketplace list --json", f"plugin marketplace add {ROOT}",
                                         "plugin list", f"plugin install {PLUGIN} --scope user"])
+        self.assertEqual(self.market()["path"], str(ROOT))
 
     def test_second_install_updates_marketplace_and_plugin(self):
         self.install()
         before = len(self.calls())
         r = self.install()
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(self.calls()[before:], ["plugin marketplace list",
+        self.assertEqual(self.calls()[before:], ["plugin marketplace list --json",
                                                  f"plugin marketplace update {MARKET}",
                                                  "plugin list", f"plugin update {PLUGIN} --scope user"])
 
@@ -104,13 +149,13 @@ class ClaudeTargetTest(unittest.TestCase):
 
     def test_uninstall_removes_plugin_and_marketplace(self):
         self.assertEqual(self.sh("uninstall", "claude").returncode, 0)
-        self.assertEqual(self.calls(), ["plugin list", "plugin marketplace list"])
+        self.assertEqual(self.calls(), ["plugin list", "plugin marketplace list --json"])
         self.install()
         before = len(self.calls())
         r = self.sh("uninstall", "claude")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(self.calls()[before:], ["plugin list", f"plugin uninstall {PLUGIN} --scope user",
-                                                 "plugin marketplace list",
+                                                 "plugin marketplace list --json",
                                                  f"plugin marketplace remove {MARKET}"])
         self.assertEqual(self.sh("status", "claude").returncode, 1)
 
@@ -134,8 +179,8 @@ class ClaudeTargetTest(unittest.TestCase):
         self.assertEqual(self.sh("status", "claude").returncode, 1)
 
     def test_bad_node_bin_fails_before_claude_is_called(self):
-        old = write_exec(self.tmp / "old" / "node", FAKE_NODE % "v16.20.0")
-        spaced = write_exec(self.tmp / "dir with space" / "node", FAKE_NODE % "v22.0.0")
+        old = write_exec(self.tmp / "old" / "node", FAKE_NODE % ("v16.20.0", REAL_NODE))
+        spaced = write_exec(self.tmp / "dir with space" / "node", FAKE_NODE % ("v22.0.0", REAL_NODE))
         cases = {"missing": self.tmp / "nope" / "node", "too old": old, "space": spaced}
         for name, node in cases.items():
             with self.subTest(name):
@@ -174,6 +219,109 @@ class ClaudeTargetTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("plugin marketplace add Shermanxwz/General-Worker-MCP", self.calls())
         self.assertFalse(d.exists())
+
+    def test_source_change_on_reinstall_removes_and_re_adds_marketplace(self):
+        a, b = self.folder("a"), self.folder("b")
+        self.assertEqual(self.install(WORKER_MARKETPLACE_SOURCE=str(a)).returncode, 0)
+        before = len(self.calls())
+        r = self.install(WORKER_MARKETPLACE_SOURCE=str(b))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.calls()[before:], ["plugin marketplace list --json",
+                                                 f"plugin marketplace remove {MARKET}",
+                                                 f"plugin marketplace add {b}",
+                                                 "plugin list", f"plugin install {PLUGIN} --scope user"])
+        self.assertEqual(self.market()["path"], str(b))
+        self.assertEqual(self.status(WORKER_MARKETPLACE_SOURCE=str(b)).returncode, 0)
+
+    def test_source_change_updates_plugin_if_removal_leaves_it_installed(self):
+        a, b = self.folder("a"), self.folder("b")
+        self.install(WORKER_MARKETPLACE_SOURCE=str(a))
+        before = len(self.calls())
+        r = self.install(WORKER_MARKETPLACE_SOURCE=str(b), FAKE_CLAUDE_KEEP_PLUGINS="1")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.calls()[before:], ["plugin marketplace list --json",
+                                                 f"plugin marketplace remove {MARKET}",
+                                                 f"plugin marketplace add {b}",
+                                                 "plugin list", f"plugin update {PLUGIN} --scope user"])
+        self.assertEqual(self.market()["path"], str(b))
+
+    def test_source_change_to_unusable_folder_fails_before_touching_marketplace(self):
+        a = self.folder("a")
+        self.install(WORKER_MARKETPLACE_SOURCE=str(a))
+        for name, source in (("no manifest", self.folder("bad", manifest=False)),
+                             ("missing", self.tmp / "missing")):
+            with self.subTest(name):
+                before = len(self.calls())
+                r = self.install(WORKER_MARKETPLACE_SOURCE=str(source))
+                self.assertEqual(r.returncode, 1)
+                self.assertIn("failed", r.stderr)
+                self.assertIn("marketplace.json", r.stderr)
+                self.assertEqual(self.calls()[before:], [])
+                self.assertEqual(self.market()["path"], str(a))
+
+    def test_same_folder_spelled_differently_is_updated_not_switched(self):
+        a = self.folder("a")
+        self.install(WORKER_MARKETPLACE_SOURCE=str(a))
+        # a trailing slash, a path relative to the working directory, and ~/ for the same folder
+        for spelling in (f"{a}/", "a", "~/a"):
+            with self.subTest(spelling=spelling):
+                before = len(self.calls())
+                r = self.install(WORKER_MARKETPLACE_SOURCE=spelling, HOME=str(self.tmp))
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertEqual(self.calls()[before:], ["plugin marketplace list --json",
+                                                         f"plugin marketplace update {MARKET}",
+                                                         "plugin list", f"plugin update {PLUGIN} --scope user"])
+
+    def test_failed_steps_are_named_by_their_action(self):
+        r = self.install(FAKE_CLAUDE_FAIL="plugin marketplace add")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("failed: marketplace add", r.stderr)
+        self.assertNotIn("marketplace added", r.stdout + r.stderr)
+        self.assertEqual(self.install().returncode, 0)
+        r = self.install(FAKE_CLAUDE_FAIL="plugin marketplace update")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("failed: marketplace update", r.stderr)
+        self.assertNotIn("marketplace updated", r.stdout + r.stderr)
+        r = self.install(FAKE_CLAUDE_FAIL="plugin update")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("failed: plugin update", r.stderr)
+        self.assertNotIn("plugin updated", r.stdout + r.stderr)
+
+    def test_status_fails_when_folder_source_has_no_manifest(self):
+        a = self.folder("a")
+        self.install(WORKER_MARKETPLACE_SOURCE=str(a))
+        (a / ".claude-plugin" / "marketplace.json").unlink()
+        r = self.status(WORKER_MARKETPLACE_SOURCE=str(a))
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("no .claude-plugin/marketplace.json", r.stdout)
+
+    def test_status_fails_when_folder_source_was_moved(self):
+        a = self.folder("a")
+        self.install(WORKER_MARKETPLACE_SOURCE=str(a))
+        a.rename(self.tmp / "moved")
+        r = self.status(WORKER_MARKETPLACE_SOURCE=str(a))
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("no .claude-plugin/marketplace.json", r.stdout)
+        r = self.status(WORKER_MARKETPLACE_SOURCE=str(self.tmp / "moved"))
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("run install to switch", r.stdout)
+
+    def test_status_fails_when_recorded_source_differs(self):
+        a, b = self.folder("a"), self.folder("b")
+        self.install(WORKER_MARKETPLACE_SOURCE=str(a))
+        r = self.status(WORKER_MARKETPLACE_SOURCE=str(b))
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("run install to switch", r.stdout)
+        r = self.status()  # the default source is this checkout, which is not the recorded one
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("run install to switch", r.stdout)
+
+    def test_marketplace_is_matched_by_name_not_by_path_text(self):
+        other = [{"name": "other", "source": "directory", "path": str(self.tmp / MARKET), "installLocation": "x"}]
+        (self.state / "markets.json").write_text(json.dumps(other))
+        r = self.status(WORKER_MARKETPLACE_SOURCE=str(self.folder("a")))
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("marketplace not added", r.stdout)
 
 
 if __name__ == "__main__":
