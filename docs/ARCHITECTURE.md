@@ -61,14 +61,14 @@ enter_worker_mode 或 exit_worker_mode 返回
   UserPromptSubmit hook（托管）   写入 on（by=user），注入规则
   skill worker（管理员）           规则块不存在时，本轮按简版规则执行
 模型调用 mcp__worker__enter_worker_mode 或 exit_worker_mode
-  PostToolUse hook（托管）        按状态规则写入，只输出 systemMessage
+  PostToolUse hook（托管）        按状态规则写入，输出 additionalContext 和 systemMessage
 新会话或恢复会话
   SessionStart hook（托管）       开启 → 注入规则
 ```
 
 - Codex 的托管块只有 UserPromptSubmit、SessionStart、PostToolUse 三个事件，没有 PreToolUse 处理。
 - 子代理与主线程共享 `session_id`，hook 无法区分它们，所以子代理也会读到开启状态。通用规则的最后一条要求子代理忽略总控规则。
-- 模型自己进入模式时，Codex 的 PostToolUse 只输出 systemMessage，规则从下一条用户消息起注入。
+- 模型调用 enter 或 exit 时，Codex 的 PostToolUse 与 Claude 相同，输出 additionalContext 和 systemMessage。Codex 官方文档的示例包含 additionalContext，并说明它作为额外的开发者上下文加入；同步 hook 的生效时间没有写明（见第 9 节）。
 
 Codex 托管块中 PostToolUse 的匹配器是：
 
@@ -111,8 +111,8 @@ Codex 托管块中 PostToolUse 的匹配器是：
 | UserPromptSubmit | 两者 | 普通消息，notice=off | 注入关闭文本一次 |
 | SessionStart | 两者 | 开启 | 注入规则 |
 | PreToolUse | 仅 Claude | 开启，主线程，受限工具 | permissionDecision 为 deny，附原因 |
-| PostToolUse（exit） | 两者 | 当前开启，reason 非空，没有报错 | Claude：关闭文本加 systemMessage；Codex：只有 systemMessage |
-| PostToolUse（enter） | 两者 | 当前关闭，没有报错 | Claude：规则加 systemMessage；Codex：只有 systemMessage |
+| PostToolUse（exit） | 两者 | 当前开启，reason 非空，没有报错 | additionalContext 为关闭文本，加 systemMessage |
+| PostToolUse（enter） | 两者 | 当前关闭，没有报错 | additionalContext 为规则，加 systemMessage |
 
 其他事件没有输出。hook 内部错误只在 stderr 写一行，退出码为 0。
 
@@ -143,6 +143,7 @@ Codex 托管块中 PostToolUse 的匹配器是：
 | 派工使用运行时原生子代理 | 派工和子代理输出由运行时管理，不需要自建调度 | [Claude 子代理](https://code.claude.com/docs/en/sub-agents)；[Codex Subagents](https://learn.chatgpt.com/docs/agent-configuration/subagents) |
 | Claude 用插件分发 | skills、hooks、MCP 同包；`${CLAUDE_PLUGIN_ROOT}` 指向安装副本 | [插件清单](https://code.claude.com/docs/en/plugins-reference)；[插件市场](https://code.claude.com/docs/en/plugin-marketplaces) |
 | 主线程拦截用 PreToolUse，子代理用 agent_id 放行 | 官方 hook 输入在子代理的工具调用中带有 `agent_id` | [Claude hooks](https://code.claude.com/docs/en/hooks) |
+| 切换时 PostToolUse 两家都输出 additionalContext | 设计目标是规则在模型调用工具时就送达，而不是等到下一条用户消息。Claude 官方文档写明，这段文本放在工具结果旁，模型在下一次请求时读取；Codex 官方文档的示例包含该字段，但没有写明同步 hook 的生效时间（见第 9 节） | [Claude hooks](https://code.claude.com/docs/en/hooks)；[Codex hooks](https://learn.chatgpt.com/docs/hooks) |
 | Codex 用管理员 skill 和托管 hooks | 管理员 skill 由所有 collection 共用；托管 hooks 由策略信任，不依赖 web 的信任界面 | [Codex hooks](https://learn.chatgpt.com/docs/hooks)；[托管配置](https://learn.chatgpt.com/docs/enterprise/managed-configuration)；[Codex Skills](https://developers.openai.com/codex/skills) |
 | MCP 服务器不保存状态 | 状态只由 hook 写入，避免两处状态不一致 | 设计选择 |
 | Codex 的 MCP 由官方 CLI 写入 | `codex mcp add` 和 `codex mcp remove` 修改 `config.toml`，安装器不手改该文件 | [Codex MCP](https://developers.openai.com/codex/mcp)；[配置参考](https://learn.chatgpt.com/docs/config-file/config-reference) |
@@ -165,7 +166,7 @@ Codex 托管块中 PostToolUse 的匹配器是：
 
 未验证的范围：
 
-- 真实模型的行为：模型是否遵守规则，是否在该退出时调用 `exit_worker_mode`。
+- 真实模型的行为：模型是否遵守规则，是否在该退出时调用 `exit_worker_mode`，以及 PostToolUse 的 `additionalContext` 是否被模型读到。Claude 官方文档说明模型在下一次请求时读取；Codex 同步 hook 的生效时间没有写明。
 - web 界面的显示：claude web 的时间线和拒绝信息，codex web 的工具卡片和“官方事件”。
 - claude web 如何把插件链接到各 collection，以及服务进程是否继承 `CLAUDE_CONFIG_DIR` 或 `CODEX_HOME`。
 - Codex 主线程的硬拦截：没有，也无法做到，因为 hook 输入无法区分主线程和子代理。

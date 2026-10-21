@@ -59,9 +59,10 @@ hook 识别以 `/worker`、`@worker` 或 `$worker` 开头的输入，大小写�
 | UserPromptSubmit | 有 | 有 | 处理命令；开启期间每轮注入规则 |
 | SessionStart | 有 | 有 | 开启中的会话开始或恢复时注入规则 |
 | PreToolUse | 有 | 没有 | 主线程（无 `agent_id`）调用 `Edit`、`Write`、`MultiEdit`、`NotebookEdit`、`Bash`、`Monitor`、`PowerShell`，或除控制工具外的 `mcp__*` 工具时拒绝。Codex 无法区分主线程和子代理，所以不做拦截 |
-| PostToolUse | 有 | 有 | 只处理 `enter_worker_mode` 和 `exit_worker_mode`，真正切换状态时才输出提示 |
+| PostToolUse | 有 | 有 | 只处理 `enter_worker_mode` 和 `exit_worker_mode`；真正切换状态时输出 `additionalContext`（进入为规则，退出为关闭文本）和系统提示，两家相同 |
 
 - PostToolUse 的切换条件：退出需要当前为开、`reason` 非空、工具没有报错；进入需要当前为关、工具没有报错。
+- 模型调用 `enter_worker_mode` 或 `exit_worker_mode` 并完成切换后，两家都通过 PostToolUse 的 `additionalContext` 注入规则（进入）或关闭文本（退出），并显示系统提示。Claude 官方文档写明，这段文本放在工具结果旁，模型在下一次请求时读取。Codex 官方文档的示例包含 `additionalContext`，并说明它作为额外的开发者上下文加入，但没有写明同步 hook 的生效时间。两家都没有在真实模型上验证。
 - Claude 的子代理（`agent_id` 非空）不能切换模式。
 - hook 出错时放行：输入不是合法 JSON、事件未知或内部错误，都只在 stderr 写一行，退出码为 0，不会阻断用户。
 
@@ -100,7 +101,7 @@ hook 识别以 `/worker`、`@worker` 或 `$worker` 开头的输入，大小写�
 ### 前提
 
 - 服务器上的 Node.js 22 或更新版本（`node --version`）。安装器会拒绝 Node 22 之前的版本。两个 web 仓库的 `package.json` 都声明 `node >=22.12.0`。CI 在 Node 22 和 24 上测试。
-- Claude 目标：Claude Code CLI，2.1.292 或更新版本，最好与 claude web 使用的版本一致。CI 测试的是 2.1.295。claude web 的 Agent SDK 固定为 `@anthropic-ai/claude-agent-sdk` 0.3.295，它与 Claude Code 版本号的对应关系未核实。
+- Claude 目标：Claude Code CLI，2.1.292 或更新版本，最好与 claude web 使用的版本一致。CI 测试的是 2.1.295。claude web 固定 `@anthropic-ai/claude-agent-sdk` 0.3.295，其 npm 元数据中的 `claudeCodeVersion` 为 2.1.295，所以 claude web 的 worker 可以使用单次 `effort` 参数（需要 2.1.292 或更新版本）。
 - Codex 目标：codex CLI 0.124 或更新版本。0.124 这个下限（托管 hooks 需要）来自社区资料，没有经过官方文档确认；0.124.0 上 `codex mcp list --json` 和 `codex mcp get` 的行为已在本地确认。CI 只测试 0.163.0。
 
 ### 入口
