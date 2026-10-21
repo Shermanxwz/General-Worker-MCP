@@ -146,12 +146,8 @@ function isErrorResponse(response) {
   return response !== null && typeof response === 'object' && !Array.isArray(response) && response.isError === true;
 }
 
-function postOutput(runtime, additionalContext, systemMessage) {
-  if (runtime === 'claude') return hookOutput('PostToolUse', additionalContext, systemMessage);
-  return { systemMessage };
-}
-
 // Acts only on real transitions: exit only while ON, enter only while OFF.
+// Both runtimes send the same shape. Codex's documented PostToolUse example uses hookSpecificOutput.additionalContext too.
 function onPostToolUse(input, runtime) {
   const name = input.tool_name;
   if (typeof name !== 'string' || !CONTROL_TOOL_RE.test(name)) return null;
@@ -167,11 +163,11 @@ function onPostToolUse(input, runtime) {
     const reason = input.tool_input && input.tool_input.reason;
     if (!state.on || !nonEmpty(reason)) return null;
     writeState(runtime, sid, { on: false, updatedAt: nowIso(), by: 'model', notice: 'off' });
-    return postOutput(runtime, OFF_TEXT, MSG.offModel);
+    return hookOutput('PostToolUse', OFF_TEXT, MSG.offModel);
   }
   if (state.on) return null;
   writeState(runtime, sid, { on: true, updatedAt: nowIso(), by: 'model', notice: null });
-  return postOutput(runtime, rulesText(runtime), MSG.onModel);
+  return hookOutput('PostToolUse', rulesText(runtime), MSG.onModel);
 }
 
 function handle(input, runtime) {

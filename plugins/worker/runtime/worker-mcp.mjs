@@ -73,7 +73,7 @@ function callTool(params) {
 
   if (name === 'enter_worker_mode') {
     return toolResult(
-      `已进入 Worker 模式：${why || '用户要求'}。本会话会持续保持，直到用户关闭或你调用 exit_worker_mode。请按注入的总控规则工作。`,
+      `已进入 Worker 模式：${why || '用户要求'}。本会话会持续保持，直到用户关闭或你调用 exit_worker_mode。从现在起按 Worker 模式规则工作：主控只读，实际工作派给原生子代理。`,
     );
   }
   if (!why) {

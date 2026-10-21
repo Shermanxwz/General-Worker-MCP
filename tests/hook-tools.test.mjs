@@ -145,10 +145,15 @@ describe('PostToolUse: enter_worker_mode', () => {
     assert.equal(s.notice, null);
   });
 
-  test('codex: enter while off gives systemMessage only and turns on by model', (t) => {
+  test('codex: enter while off sends the rules as additionalContext plus systemMessage, and turns on by model', (t) => {
     const dir = freshDir(t);
+    const rules = one(turnOn(freshDir(t), 'codex')).hookSpecificOutput.additionalContext;
+    assert.ok(rules.startsWith(HEADER));
     const out = one(run(dir, postInput('mcp__worker__enter_worker_mode', { reason: '用户要求' }), 'codex'));
-    assert.deepEqual(out, { systemMessage: 'Worker 模式：已由模型开启' });
+    assert.deepEqual(out, {
+      hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: rules },
+      systemMessage: 'Worker 模式：已由模型开启',
+    });
     assert.equal(state(dir).on, true);
     assert.equal(state(dir).by, 'model');
   });
@@ -167,6 +172,13 @@ describe('PostToolUse: enter_worker_mode', () => {
   test('enter with isError true while off: no write, no output', (t) => {
     const dir = freshDir(t);
     assert.equal(run(dir, postInput(ENTER_P, { reason: 'x' }, { isError: true, content: [] })), '');
+    assert.equal(exists(dir), false);
+  });
+
+  test('codex: enter with isError true while off: no write, no output', (t) => {
+    const dir = freshDir(t);
+    const tool = 'mcp__worker__enter_worker_mode';
+    assert.equal(run(dir, postInput(tool, { reason: 'x' }, { isError: true, content: [] }), 'codex'), '');
     assert.equal(exists(dir), false);
   });
 
@@ -193,11 +205,14 @@ describe('PostToolUse: exit_worker_mode', () => {
     assert.ok(!Number.isNaN(Date.parse(s.updatedAt)));
   });
 
-  test('codex: exit while on gives systemMessage only and turns off by model', (t) => {
+  test('codex: exit while on sends the off text as additionalContext plus systemMessage, and turns off by model', (t) => {
     const dir = freshDir(t);
     turnOn(dir, 'codex');
     const out = one(run(dir, postInput('mcp__worker__exit_worker_mode', { reason: '用户要求' }), 'codex'));
-    assert.deepEqual(out, { systemMessage: 'Worker 模式：已由模型关闭' });
+    assert.deepEqual(out, {
+      hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: OFF_TEXT },
+      systemMessage: 'Worker 模式：已由模型关闭',
+    });
     assert.equal(state(dir).on, false);
     assert.equal(state(dir).by, 'model');
     assert.equal(state(dir).notice, 'off');
@@ -219,29 +234,33 @@ describe('PostToolUse: exit_worker_mode', () => {
     assert.equal(state(dir).on, false);
   });
 
-  for (const ti of [{}, { reason: '' }, { reason: '   ' }, { reason: 42 }, { reason: null }]) {
-    test(`exit with tool_input ${JSON.stringify(ti)} is ignored while on`, (t) => {
+  for (const rt of ['claude', 'codex']) {
+    const tool = rt === 'claude' ? EXIT_P : 'mcp__worker__exit_worker_mode';
+
+    for (const ti of [{}, { reason: '' }, { reason: '   ' }, { reason: 42 }, { reason: null }]) {
+      test(`${rt}: exit with tool_input ${JSON.stringify(ti)} is ignored while on`, (t) => {
+        const dir = freshDir(t);
+        turnOn(dir, rt);
+        const before = rawState(dir);
+        assert.equal(run(dir, postInput(tool, ti), rt), '');
+        assert.equal(rawState(dir), before);
+      });
+    }
+
+    test(`${rt}: exit with isError true is ignored while on`, (t) => {
       const dir = freshDir(t);
-      turnOn(dir);
+      turnOn(dir, rt);
       const before = rawState(dir);
-      assert.equal(run(dir, postInput(EXIT_P, ti)), '');
+      assert.equal(run(dir, postInput(tool, { reason: '用户要求' }, { isError: true, content: [] }), rt), '');
       assert.equal(rawState(dir), before);
     });
+
+    test(`${rt}: exit while off: no write, no output`, (t) => {
+      const dir = freshDir(t);
+      assert.equal(run(dir, postInput(tool, { reason: '用户要求' }), rt), '');
+      assert.equal(exists(dir), false);
+    });
   }
-
-  test('exit with isError true is ignored while on', (t) => {
-    const dir = freshDir(t);
-    turnOn(dir);
-    const before = rawState(dir);
-    assert.equal(run(dir, postInput(EXIT_P, { reason: '用户要求' }, { isError: true, content: [] })), '');
-    assert.equal(rawState(dir), before);
-  });
-
-  test('exit while off: no write, no output', (t) => {
-    const dir = freshDir(t);
-    assert.equal(run(dir, postInput(EXIT_P, { reason: '用户要求' })), '');
-    assert.equal(exists(dir), false);
-  });
 
   test('claude subagent (non-empty agent_id) cannot exit: state unchanged, no output', (t) => {
     const dir = freshDir(t);

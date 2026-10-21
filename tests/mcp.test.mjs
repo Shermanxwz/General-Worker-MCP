@@ -159,7 +159,10 @@ test('enter_worker_mode with a reason succeeds and includes the reason', () =>
     const { result } = await callTool(server, 'enter_worker_mode', { reason: '并行改三个模块' });
     assert.equal(result.isError, false);
     assert.equal(result.content[0].type, 'text');
-    assert.ok(result.content[0].text.startsWith('已进入 Worker 模式：并行改三个模块。'), result.content[0].text);
+    assert.equal(
+      result.content[0].text,
+      '已进入 Worker 模式：并行改三个模块。本会话会持续保持，直到用户关闭或你调用 exit_worker_mode。从现在起按 Worker 模式规则工作：主控只读，实际工作派给原生子代理。',
+    );
   }));
 
 test('enter_worker_mode works without a reason', () =>
@@ -168,7 +171,7 @@ test('enter_worker_mode works without a reason', () =>
     const empty = await callTool(server, 'enter_worker_mode', {});
     for (const { result } of [bare, empty]) {
       assert.equal(result.isError, false);
-      assert.ok(result.content[0].text.includes('用户要求'), result.content[0].text);
+      assert.ok(result.content[0].text.startsWith('已进入 Worker 模式：用户要求。'), result.content[0].text);
     }
   }));
 
