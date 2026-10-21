@@ -3,10 +3,9 @@
 import contextlib
 import importlib.util
 import io
-from pathlib import Path
 import unittest
+from pathlib import Path
 from unittest import mock
-
 
 SPEC = importlib.util.spec_from_file_location(
     "codex_probe", Path(__file__).with_name("check-codex-skills.py")

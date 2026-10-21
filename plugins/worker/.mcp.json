@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "worker": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/runtime/worker-mcp.mjs"]
+    }
+  }
+}

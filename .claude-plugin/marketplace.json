@@ -1,0 +1,16 @@
+{
+  "name": "general-worker-mcp",
+  "owner": {
+    "name": "Shermanxwz"
+  },
+  "metadata": {
+    "description": "Worker 模式：Claude Code 与 Codex 的只读总控模式，把实际工作派给原生子代理。"
+  },
+  "plugins": [
+    {
+      "name": "worker",
+      "source": "./plugins/worker",
+      "description": "Worker 模式：主会话只读总控，把实际工作派给 Claude Code 原生子代理，可随时开关。"
+    }
+  ]
+}
