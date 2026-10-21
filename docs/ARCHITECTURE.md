@@ -29,7 +29,7 @@
 | `scripts/codex-files.sh` | Codex 辅助脚本（被 source）：复制 runtime 和 rules，安装 skill |
 | `scripts/codex-config.sh` | Codex 辅助脚本（被 source）：托管 hooks 块，`worker` MCP 条目 |
 | `tests/` | Node 测试（hook、MCP）、Python 测试（元数据、发布一致性、安装器、探针）、两个 Codex 探针 |
-| `.github/workflows/ci.yml` | CI：lint、tests、claude-plugin、codex 四个任务 |
+| `.github/workflows/ci.yml` | CI：lint、tests、node-tests、claude-plugin、codex 五个任务 |
 | `LICENSE`、`CHANGELOG.md`、`docs/ARCHITECTURE.md` | 许可证、版本记录、本文档 |
 
 运行时文件全部放在 `plugins/worker/` 之内。Claude Code 安装插件时只复制这个目录，之外的文件在安装后不可用。
@@ -52,6 +52,8 @@ enter_worker_mode 或 exit_worker_mode 返回
   SessionStart hook        开启 → 注入规则
 ```
 
+官方文档没有说明 UserPromptSubmit 能否收到用户输入的 slash 命令。因此 `on` 和 `off` 两个 skill 会直接调用 MCP 工具，并先检查上下文中是否已有规则，避免重复。
+
 ### 3.2 Codex
 
 ```
@@ -65,7 +67,7 @@ enter_worker_mode 或 exit_worker_mode 返回
 ```
 
 - Codex 的托管块只有 UserPromptSubmit、SessionStart、PostToolUse 三个事件，没有 PreToolUse 处理。
-- 子代理与主线程共享 `session_id`，hook 无法区分它们，所以子代理也会读到开启状态。规则第 8 条要求子代理忽略总控规则。
+- 子代理与主线程共享 `session_id`，hook 无法区分它们，所以子代理也会读到开启状态。通用规则的最后一条要求子代理忽略总控规则。
 - 模型自己进入模式时，Codex 的 PostToolUse 只输出 systemMessage，规则从下一条用户消息起注入。
 
 Codex 托管块中 PostToolUse 的匹配器是：
@@ -154,7 +156,7 @@ Codex 托管块中 PostToolUse 的匹配器是：
 
 | 层次 | 检查内容 | 位置 |
 |---|---|---|
-| 单元（Node） | 命令识别、事件输出、状态文件格式和权限、损坏文件、会话键净化、MCP 协议 | `tests/hook-commands.test.mjs`、`tests/hook-robustness.test.mjs`、`tests/hook-tools.test.mjs`、`tests/mcp.test.mjs` |
+| 单元（Node） | 命令识别、事件输出、状态文件格式和权限、损坏文件、会话键净化、MCP 协议 | `tests/hook-commands.test.mjs`、`tests/hook-robustness.test.mjs`、`tests/hook-tools.test.mjs`、`tests/mcp.test.mjs`；CI 的 `node-tests` 任务在 Node 22 和 24 上运行 |
 | 黑盒（Python） | 插件、市场、MCP、hooks、skill 的元数据；hooks 中的路径存在；发布一致性；探针的判断逻辑 | `tests/test_metadata.py`、`tests/test_release.py`、`tests/test_hooks_probe.py`、`tests/test_discovery.py` |
 | 安装器 | 两个目标的 install、uninstall、status，退出码，v1 清理，路径白名单，失败提示；用假 CLI 记录调用 | `tests/test_install_claude.py`、`tests/test_install_codex.py` |
 | 真实 CLI 往返（CI） | `claude plugin validate`；插件的 install、status、uninstall；Codex 托管块、admin skill 发现、MCP 注册和删除 | `claude-plugin` 和 `codex` 任务（Claude Code 2.1.295，Codex 0.163.0） |

@@ -12,7 +12,7 @@
 - Codex 目标：管理员 skill（`/etc/codex/skills/worker/SKILL.md`）、托管 hooks（`/etc/codex/requirements.toml` 中的托管块）和 `worker` MCP 注册。
 - 安装器重写：`install.sh` 负责参数和 Node 检查，`scripts/claude.sh` 和 `scripts/codex.sh` 分别处理两个目标，另有两个辅助脚本。支持 install、uninstall、status。
 - 规则新增四条协作做法：共享背景先写入文件，之后的工作包只引用路径；工作者只汇报改动、自测结果和遗留问题；返工发回同一个工作者；重要改动由未实现它的工作者独立检查。
-- 测试与 CI：Node 测试（hook、MCP）、Python 测试（元数据、发布一致性、安装器、探针）、两个只读 Codex 探针。CI 有 lint、tests、claude-plugin、codex 四个任务，版本固定，不调用模型、不登录。
+- 测试与 CI：Node 测试（hook、MCP）、Python 测试（元数据、发布一致性、安装器、探针）、两个只读 Codex 探针。CI 有 lint、tests、node-tests、claude-plugin、codex 五个任务，版本固定，不调用模型、不登录。
 - 发布一致性测试：`plugin.json` 的版本、MCP 服务器 serverInfo 的版本和本文件最新条目必须一致；许可证必须是 MIT。
 - MIT 许可证（`LICENSE`），`plugin.json` 声明 `"license": "MIT"`。
 - 架构说明 `docs/ARCHITECTURE.md`。
