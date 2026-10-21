@@ -127,7 +127,10 @@ def field(entry, key):
 
 
 def hook_lines(node, event="?"):
-    """One line per hook entry (a dict with a string "command"); the event comes from the nearest entry that names it."""
+    """One line per hook entry (a dict with a string "command").
+
+    The event comes from the nearest entry that names it.
+    """
     lines = []
     if isinstance(node, dict):
         event = str(node.get("eventName") or node.get("event") or event)

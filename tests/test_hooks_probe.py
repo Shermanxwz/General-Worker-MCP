@@ -9,11 +9,10 @@ import importlib.util
 import io
 import json
 import os
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
-
 
 SPEC = importlib.util.spec_from_file_location(
     "codex_hooks_probe", Path(__file__).with_name("check-codex-hooks.py")

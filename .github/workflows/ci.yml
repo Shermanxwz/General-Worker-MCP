@@ -13,8 +13,64 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  lint:
+    name: Lint (shellcheck, node --check, py_compile, JSON and workflow YAML)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          package-manager-cache: false
+      - name: Install PyYAML
+        run: python -m pip install --disable-pip-version-check 'PyYAML==6.0.3'
+      - name: Shell scripts (shellcheck, POSIX sh)
+        run: shellcheck -s sh install.sh scripts/*.sh
+      - name: Node module syntax (node --check)
+        run: |
+          set -eu
+          files=$(git ls-files '*.mjs')
+          if [ -z "$files" ]; then
+            echo "no tracked .mjs files" >&2
+            exit 1
+          fi
+          for file in $files; do
+            node --check "$file"
+          done
+      - name: Python test syntax (py_compile)
+        run: python -m py_compile tests/*.py
+      - name: JSON files and workflow YAML parse
+        run: |
+          set -eu
+          python - <<'PY'
+          import json
+          import subprocess
+
+          import yaml
+
+          paths = subprocess.run(
+              ["git", "ls-files", "*.json"],
+              check=True, capture_output=True, text=True,
+          ).stdout.split()
+          if not paths:
+              raise SystemExit("no tracked .json files")
+          for path in paths:
+              with open(path, encoding="utf-8") as handle:
+                  json.load(handle)
+              print("json ok:", path)
+          with open(".github/workflows/ci.yml", encoding="utf-8") as handle:
+              yaml.safe_load(handle)
+          print("yaml ok: .github/workflows/ci.yml")
+          PY
+
   tests:
-    name: Tests and installer syntax (Python ${{ matrix.python }})
+    name: Python tests (Python ${{ matrix.python }})
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     strategy:
@@ -34,16 +90,27 @@ jobs:
           package-manager-cache: false
       - name: Install test dependencies
         run: python -m pip install --disable-pip-version-check 'PyYAML==6.0.3'
-      - name: Check installer and helper script syntax
-        run: |
-          set -eu
-          for script in install.sh scripts/*.sh; do
-            sh -n "$script"
-          done
+      - name: Run Python tests (release, metadata, installer, probes)
+        run: python -m unittest discover -s tests -p 'test_*.py' -v
+
+  node-tests:
+    name: Node tests (Node ${{ matrix.node }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['22', '24']
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node }}
+          package-manager-cache: false
       - name: Run Node tests (hook and MCP server)
         run: node --test tests/*.test.mjs
-      - name: Run Python tests (metadata, installer, probes)
-        run: python -m unittest discover -s tests -p 'test_*.py' -v
 
   claude-plugin:
     name: Claude Code plugin validation and install round trip (no login)

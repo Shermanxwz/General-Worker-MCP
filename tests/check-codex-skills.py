@@ -136,7 +136,7 @@ def main():
 
         shown = [s for s in skills if s.get("scope") != "system"]
         for s in shown:
-            print(f"{str(s.get('name')):<24} scope={str(s.get('scope')):<8} {s.get('path')}")
+            print(f"{s.get('name')!s:<24} scope={s.get('scope')!s:<8} {s.get('path')}")
         if not shown:
             print("(no non-system skills listed)")
         for e in errors:
