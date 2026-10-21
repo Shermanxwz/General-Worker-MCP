@@ -14,9 +14,9 @@ concurrency:
 
 jobs:
   tests:
-    name: Hook and installer (Python ${{ matrix.python }})
+    name: Tests and installer syntax (Python ${{ matrix.python }})
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
@@ -28,25 +28,73 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python }}
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          package-manager-cache: false
       - name: Install test dependencies
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y jq
-          python -m pip install 'PyYAML>=6,<7'
-      - name: Check shell and Python syntax
-        run: |
-          sh -n install.sh
-          sh -n tests/test-hook.sh
-          python -m py_compile tests/*.py
-      - name: Test the Claude hook
-        run: sh tests/test-hook.sh
-      - name: Test metadata and isolated install lifecycle
+        run: python -m pip install --disable-pip-version-check 'PyYAML==6.0.3'
+      - name: Check installer syntax
+        run: sh -n install.sh
+      - name: Run Node tests (hook and MCP server)
+        run: node --test tests/*.test.mjs
+      - name: Run Python tests (metadata, installer, probes)
         run: python -m unittest discover -s tests -p 'test_*.py' -v
 
-  codex-discovery:
-    name: Native Codex skill discovery (no model calls)
+  claude-plugin:
+    name: Claude Code plugin validation and install round trip (no login)
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 10
+    env:
+      DISABLE_AUTOUPDATER: '1'
+      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1'
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          package-manager-cache: false
+      - name: Install the tested Claude Code CLI version
+        run: |
+          npm install --prefix "$RUNNER_TEMP/claude-cli" --no-audit --no-fund @anthropic-ai/claude-code@2.1.295
+          echo "$RUNNER_TEMP/claude-cli/node_modules/.bin" >> "$GITHUB_PATH"
+      - name: Validate the marketplace and the plugin
+        run: |
+          claude --version
+          claude plugin validate .
+          claude plugin validate plugins/worker
+      - name: Install, check and uninstall through install.sh (temp HOME)
+        env:
+          CLAUDE_BIN: ${{ runner.temp }}/claude-cli/node_modules/.bin/claude
+          WORKER_MARKETPLACE_SOURCE: ${{ github.workspace }}
+        run: |
+          set -eu
+          export HOME="$RUNNER_TEMP/claude-home"
+          export CLAUDE_CONFIG_DIR="$HOME/.claude"
+          mkdir -p "$CLAUDE_CONFIG_DIR"
+
+          sh install.sh install claude
+          "$CLAUDE_BIN" plugin list > "$RUNNER_TEMP/plugins-installed.txt"
+          if ! grep -q 'worker@general-worker-mcp' "$RUNNER_TEMP/plugins-installed.txt"; then
+            echo "plugin is not listed after install" >&2
+            exit 1
+          fi
+
+          sh install.sh status claude
+
+          sh install.sh uninstall claude
+          "$CLAUDE_BIN" plugin list > "$RUNNER_TEMP/plugins-removed.txt"
+          if grep -q 'worker@general-worker-mcp' "$RUNNER_TEMP/plugins-removed.txt"; then
+            echo "plugin is still listed after uninstall" >&2
+            exit 1
+          fi
+
+  codex:
+    name: Codex skill, MCP server and managed hooks (no model calls)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v5
         with:
@@ -62,11 +110,72 @@ jobs:
         run: |
           npm install --prefix "$RUNNER_TEMP/codex-cli" --no-audit --no-fund @openai/codex@0.163.0
           echo "$RUNNER_TEMP/codex-cli/node_modules/.bin" >> "$GITHUB_PATH"
-      - name: Discover this checkout's skill in an isolated project
+      - name: Prepare isolated Codex paths and a temp project
         run: |
+          set -eu
           project_dir=$(mktemp -d "$RUNNER_TEMP/worker-project-XXXXXX")
           git init -q "$project_dir"
-          CODEX_SKILLS_DIR="$project_dir/.agents/skills" sh install.sh install codex
-          codex --version
-          python tests/check-codex-skills.py --cwd "$project_dir" \
-            --expected-path "$project_dir/.agents/skills/worker/SKILL.md"
+          mkdir -p "$RUNNER_TEMP/codex-home"
+          {
+            echo "WORKER_PROJECT=$project_dir"
+            echo "CODEX_HOME=$RUNNER_TEMP/codex-home"
+            echo "WORKER_HOME=$RUNNER_TEMP/worker-home"
+            echo "CODEX_SKILLS_DIR=$project_dir/.agents/skills"
+          } >> "$GITHUB_ENV"
+      - name: Install the Codex target as root with the default requirements file
+        run: |
+          set -eu
+          # The runner image has no /etc/codex; create it the way an admin would.
+          sudo install -d -m 0755 /etc/codex
+          # sudo resets PATH, so pass the Node and Codex binaries and PATH explicitly.
+          sudo env PATH="$PATH" \
+            NODE_BIN="$(command -v node)" \
+            CODEX_BIN="$(command -v codex)" \
+            CODEX_HOME="$CODEX_HOME" \
+            WORKER_HOME="$WORKER_HOME" \
+            CODEX_SKILLS_DIR="$CODEX_SKILLS_DIR" \
+            sh install.sh install codex
+      - name: Check the skill with native Codex skills/list (no model calls)
+        run: |
+          python tests/check-codex-skills.py --cwd "$WORKER_PROJECT" \
+            --expected-path "$CODEX_SKILLS_DIR/worker/SKILL.md"
+      - name: Check that codex mcp list shows worker
+        run: |
+          set -eu
+          codex mcp list > "$RUNNER_TEMP/mcp-list.txt"
+          cat "$RUNNER_TEMP/mcp-list.txt"
+          grep -qw worker "$RUNNER_TEMP/mcp-list.txt"
+      - name: Check that codex lists the managed worker hook (no model calls)
+        run: |
+          python tests/check-codex-hooks.py --cwd "$WORKER_PROJECT" \
+            --expect "$WORKER_HOME/runtime/worker-hook.mjs"
+      - name: Uninstall the Codex target and check that it is gone
+        run: |
+          set -eu
+          sudo env PATH="$PATH" \
+            NODE_BIN="$(command -v node)" \
+            CODEX_BIN="$(command -v codex)" \
+            CODEX_HOME="$CODEX_HOME" \
+            WORKER_HOME="$WORKER_HOME" \
+            CODEX_SKILLS_DIR="$CODEX_SKILLS_DIR" \
+            sh install.sh uninstall codex
+
+          # The managed block must be gone; the file itself may be removed entirely.
+          if [ -e /etc/codex/requirements.toml ]; then
+            rc=0
+            sudo grep -Eq '^# (>>>|<<<) general-worker-mcp' /etc/codex/requirements.toml || rc=$?
+            if [ "$rc" -eq 0 ]; then
+              echo "managed block is still in /etc/codex/requirements.toml" >&2
+              exit 1
+            fi
+            if [ "$rc" -ne 1 ]; then
+              echo "could not read /etc/codex/requirements.toml (grep exit $rc)" >&2
+              exit 1
+            fi
+          fi
+
+          codex mcp list > "$RUNNER_TEMP/mcp-after.txt"
+          if grep -qw worker "$RUNNER_TEMP/mcp-after.txt"; then
+            echo "worker is still listed by codex mcp list after uninstall" >&2
+            exit 1
+          fi
