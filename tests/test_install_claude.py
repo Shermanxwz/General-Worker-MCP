@@ -179,14 +179,26 @@ class ClaudeTargetTest(unittest.TestCase):
         self.assertEqual(self.sh("status", "claude").returncode, 1)
 
     def test_bad_node_bin_fails_before_claude_is_called(self):
-        old = write_exec(self.tmp / "old" / "node", FAKE_NODE % ("v16.20.0", REAL_NODE))
-        spaced = write_exec(self.tmp / "dir with space" / "node", FAKE_NODE % ("v22.0.0", REAL_NODE))
-        cases = {"missing": self.tmp / "nope" / "node", "too old": old, "space": spaced}
-        for name, node in cases.items():
+        def node(name, version="v22.0.0"):
+            return write_exec(self.tmp / name / "node", FAKE_NODE % (version, REAL_NODE))
+
+        # Except for "missing", the file exists and runs, so the stated reason is the rule that refuses it.
+        path_rule = "must be an absolute path of letters, digits and . _ / + - only"
+        cases = {
+            "missing": (self.tmp / "nope" / "node", "not an executable file"),
+            "too old": (node("old", "v20.0.0"), "node 22 or newer is required"),
+            "space": (node("dir with space"), path_rule),
+            "double quote": (node('quo"te'), path_rule),
+            "backslash": (node("back\\slash"), path_rule),
+            "dollar sign": (node("dol$ar"), path_rule),
+            "relative path": (Path("bin/node"), path_rule),  # exists under the test directory, but is relative
+        }
+        for name, (node_bin, reason) in cases.items():
             with self.subTest(name):
-                r = self.sh("install", "claude", NODE_BIN=str(node))
+                r = self.sh("install", "claude", NODE_BIN=str(node_bin))
                 self.assertEqual(r.returncode, 1)
                 self.assertIn("NODE_BIN", r.stderr)
+                self.assertIn(reason, r.stderr)
                 self.assertEqual(self.calls(), [])
 
     def test_bad_arguments_exit_2_and_call_nothing(self):
@@ -204,12 +216,25 @@ class ClaudeTargetTest(unittest.TestCase):
                 self.assertEqual(r.returncode, 0)
                 self.assertIn("usage:", r.stdout)
                 self.assertIn("CLAUDE_BIN", r.stdout)
+                self.assertIn("node 22 or newer", r.stdout)
                 self.assertEqual(self.calls(), [])
 
     def test_failed_plugin_install_exits_1(self):
         r = self.sh("install", "claude", FAKE_CLAUDE_FAIL="plugin install")
         self.assertEqual(r.returncode, 1)
         self.assertIn("failed", r.stderr)
+
+    def test_missing_claude_cli_is_named(self):
+        r = self.sh("status", "claude", CLAUDE_BIN=str(self.tmp / "nope" / "claude"))
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("CLAUDE_BIN is not a command", r.stderr)
+        self.assertEqual(self.calls(), [])
+
+    def test_plugin_list_failure_shows_the_cli_reason(self):
+        r = self.sh("status", "claude", FAKE_CLAUDE_FAIL="plugin list")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("failed: plugin list", r.stderr)
+        self.assertIn("fake failure", r.stderr)
 
     def test_defaults_follow_environment(self):
         d = self.skills / "worker"

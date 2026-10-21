@@ -233,6 +233,34 @@ class McpTests(CodexTarget):
         self.assertEqual(result.returncode, 1)
         self.assertIn("MCP server worker: could not list", result.stdout)
 
+    def test_unreadable_server_list_blocks_registration(self):
+        # Without the list the installer cannot tell whether worker is registered, so it adds nothing.
+        sb = self.sb
+        broken = sb.bin / "codex-broken"
+        make_fake(broken, '#!/bin/sh\necho "broken $*" >> "$FAKE_LOG"\necho "unknown option" >&2\nexit 2\n')
+        result = sb.run("install", CODEX_BIN=str(broken))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("could not read the MCP server list", result.stderr)
+        self.assertEqual(sb.calls(), ["broken mcp list --json"])
+        self.assertNotIn("next:", result.stdout)
+
+    def test_missing_codex_binary_is_named(self):
+        result = self.sb.run("install", CODEX_BIN=str(self.sb.root / "nope" / "codex"))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("CODEX_BIN is not a command", result.stderr)
+
+    def test_failed_mcp_remove_is_reported(self):
+        # The wrapper lists servers through the fake codex but refuses `mcp remove`.
+        sb = self.sb
+        sb.seed(("worker", "/usr/bin/node", ["/x/worker-mcp.mjs"]))
+        wrapper = sb.bin / "codex-no-remove"
+        make_fake(wrapper, f'#!/bin/sh\nif [ "$1" = mcp ] && [ "$2" = remove ]; then echo refused >&2; exit 3; fi\n'
+                           f'exec "{sb.codex}" "$@"\n')
+        result = sb.run("uninstall", CODEX_BIN=str(wrapper))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("could not remove the worker MCP server", result.stderr)
+        self.assertEqual(sb.servers(), ["worker"])
+
 
 class RequirementsPathTests(CodexTarget):
     def test_status_warns_when_the_requirements_path_is_not_the_default(self):
@@ -253,6 +281,32 @@ class UsageTests(CodexTarget):
     def test_bad_action_and_missing_environment(self):
         self.assertEqual(self.sb.run("bogus").returncode, 2)
         self.assertEqual(self.sb.run("install", NODE_BIN=None).returncode, 1)
+
+    def test_unsafe_node_bin_is_refused(self):
+        # NODE_BIN is written into the hook commands too: absolute, letters, digits and . _ / + - only.
+        for label in ("relative", 'quo"te', "back\\slash", "dol$ar", "with space"):
+            with self.subTest(label=label):
+                sb = Sandbox(self)
+                value = "bin/node" if label == "relative" else f"{sb.root / label}/node"
+                result = sb.run("install", NODE_BIN=value)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("NODE_BIN must be an absolute path of letters, digits and . _ / + - only", result.stderr)
+                self.assertFalse((sb.worker_home / "runtime").exists())
+                self.assertFalse(sb.req.exists())
+                self.assertEqual(sb.calls(), [])
+
+
+class ScriptModeTests(unittest.TestCase):
+    def test_installer_files_have_their_packaged_modes(self):
+        executable = ("install.sh", "scripts/claude.sh", "scripts/codex.sh",
+                      "tests/check-codex-skills.py", "tests/check-codex-hooks.py")
+        sourced = ("scripts/codex-files.sh", "scripts/codex-config.sh")
+        for name in executable:
+            with self.subTest(name):
+                self.assertEqual(mode(ROOT / name), 0o755)
+        for name in sourced:
+            with self.subTest(name):
+                self.assertEqual(mode(ROOT / name), 0o644)
 
 
 if __name__ == "__main__":
