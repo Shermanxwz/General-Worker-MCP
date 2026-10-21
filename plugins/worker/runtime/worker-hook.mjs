@@ -20,10 +20,12 @@ const MSG = {
 // Used only when a rules file is missing or empty.
 const FALLBACK = {
   common: '每条回复以〔Worker 模式〕开头。你是总控：拆分任务、派发给原生子代理、验收结果并汇报；不要自己改文件或运行写入命令。用户要求退出时调用 exit_worker_mode。',
-  claude: '用 Agent 工具派发子代理；主线程的 Edit、Write、Bash 和其他 MCP 工具会被 hook 拦截。',
+  claude: '用 Agent 工具派发子代理；主线程的 Edit、Write、Bash、PowerShell 和其他 MCP 工具会被 hook 拦截。',
   codex: '用 spawn_agent 派发子代理；只做只读检查，不要 apply_patch 或运行写入命令。',
 };
-const BLOCKED_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'Bash', 'Monitor']);
+// Main-thread tools that change files or run commands. Reads, searches and the subagent tools stay allowed.
+// PowerShell is the Windows counterpart of Bash.
+const BLOCKED_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'Bash', 'PowerShell', 'Monitor']);
 const CONTROL_TOOL_RE = /^mcp__.+__(enter|exit)_worker_mode$/;
 const COMMAND_RE = /^[/@$]worker(?::([A-Za-z_-]+))?(?=\s|$)/i;
 const ACTION_WORDS = new Map([
@@ -60,6 +62,7 @@ function readRuleFile(name) {
   }
 }
 
+// Files are read on every call, so an edited rules file applies from the next hook call.
 function rulesText(runtime) {
   const common = readRuleFile('common.md') || FALLBACK.common;
   const specific = readRuleFile(`${runtime}.md`) || FALLBACK[runtime];
@@ -77,7 +80,7 @@ function parseCommand(prompt) {
   return ACTION_WORDS.get(word) || 'on';
 }
 
-function onPrompt(input, runtime) {
+function onUserPromptSubmit(input, runtime) {
   const sid = input.session_id;
   const state = readState(runtime, sid);
   const action = parseCommand(typeof input.prompt === 'string' ? input.prompt : '');
@@ -103,6 +106,7 @@ function onPrompt(input, runtime) {
   }
 
   if (state.on) return hookOutput('UserPromptSubmit', rulesText(runtime));
+  // After a model exit, earlier turns still carry the rules, so the next prompt gets the off text once.
   if (state.notice === 'off') {
     writeState(runtime, sid, { ...state, notice: null });
     return hookOutput('UserPromptSubmit', OFF_TEXT);
@@ -115,11 +119,15 @@ function onSessionStart(input, runtime) {
   return hookOutput('SessionStart', rulesText(runtime));
 }
 
+// Every MCP tool is blocked on the main thread, since any of them may write outside the repo.
+// Only the two worker control tools pass, so the mode can still be switched.
 function isBlockedTool(name) {
   if (typeof name !== 'string' || CONTROL_TOOL_RE.test(name)) return false;
   return BLOCKED_TOOLS.has(name) || name.startsWith('mcp__');
 }
 
+// Claude only. A subagent carries a non-empty agent_id and does the work itself, so it is never denied.
+// Codex gets no denial here and relies on the injected rules.
 function onPreToolUse(input, runtime) {
   if (runtime !== 'claude' || nonEmpty(input.agent_id)) return null;
   if (!isBlockedTool(input.tool_name)) return null;
@@ -133,6 +141,7 @@ function onPreToolUse(input, runtime) {
   };
 }
 
+// The MCP server marks failed calls with isError; a failed call never changes the stored mode.
 function isErrorResponse(response) {
   return response !== null && typeof response === 'object' && !Array.isArray(response) && response.isError === true;
 }
@@ -168,7 +177,7 @@ function onPostToolUse(input, runtime) {
 function handle(input, runtime) {
   switch (input.hook_event_name) {
     case 'UserPromptSubmit':
-      return onPrompt(input, runtime);
+      return onUserPromptSubmit(input, runtime);
     case 'SessionStart':
       return onSessionStart(input, runtime);
     case 'PreToolUse':
@@ -198,6 +207,7 @@ async function readStdin() {
 
 async function main() {
   const runtime = parseRuntime(process.argv.slice(2));
+  // Read all of stdin before any early return, so the runner never writes into a closed pipe.
   const raw = await readStdin();
   if (runtime !== 'claude' && runtime !== 'codex') {
     note(`unknown runtime: ${String(runtime)}`);

@@ -15,7 +15,7 @@ description: Worker 模式：主控只读，实际工作交给原生 subagent（
 ## 简版规则（仅本轮，hook 未生效时）
 
 - 你是总控（orchestrator），主线程只读：不要用 apply_patch 改文件，也不要运行会写入的命令。构建、安装、测试、格式化、git commit 都交给 worker。只读查看（cat、rg、git diff、git status）可以。
-- 用 spawn_agent 把工作拆成完整的工作包，派给原生 subagent。每个工作包写清目标、范围、约束、验收标准和自测方法。互不依赖的工作包同时派。
+- 用 spawn_agent 把工作拆成完整的工作包，派给原生 subagent。每个工作包写清目标、范围、约束、验收标准、自测方法和需要汇报的内容。互不依赖的工作包同时派。
 - 只有用户明确指定了模型或推理强度时，才在 spawn_agent 里设置 model 和 reasoning_effort，并且先确认这个工具支持这两个参数。没有指定就不设。
 - worker 回来后，对照验收标准审读它的报告和 diff。不合格就把意见发回同一个 worker 继续改，不要自己补。
 - 向用户汇报谁做了什么、结果如何、还剩什么。

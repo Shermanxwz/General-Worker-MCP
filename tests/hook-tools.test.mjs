@@ -19,7 +19,7 @@ const DENY = {
 };
 
 const BLOCKED = [
-  'Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'Bash', 'Monitor',
+  'Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'Bash', 'PowerShell', 'Monitor',
   'mcp__github__push_files', 'mcp__github__get_file_contents',
 ];
 const ALLOWED = [

@@ -4,6 +4,7 @@
 // worker hooks own the per-session mode and react to these tool calls.
 import { createInterface } from 'node:readline';
 
+// Protocol versions this server speaks. For any other requested version it answers DEFAULT_VERSION, which it supports.
 const SUPPORTED_VERSIONS = ['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05'];
 const DEFAULT_VERSION = '2025-06-18';
 
@@ -56,6 +57,7 @@ function toolResult(text, isError = false) {
   return { content: [{ type: 'text', text }], isError };
 }
 
+// Failures are returned as isError results, not JSON-RPC errors: the worker hook ignores a call marked isError.
 function callTool(params) {
   const name = params?.name;
   if (typeof name !== 'string') return toolResult('缺少工具名（name）。', true);
@@ -103,7 +105,8 @@ function handleRequest(method, params, id) {
 }
 
 function handleMessage(msg) {
-  if (!isObject(msg)) return fail(null, -32600, 'Invalid Request'); // batches are not supported
+  // Batch arrays are not supported: each line carries one JSON-RPC message.
+  if (!isObject(msg)) return fail(null, -32600, 'Invalid Request');
   if (typeof msg.method !== 'string') {
     // The server sends no requests of its own, so replies from the client are ignored.
     if ('result' in msg || 'error' in msg) return;

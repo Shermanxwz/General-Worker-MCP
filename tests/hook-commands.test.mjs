@@ -231,6 +231,20 @@ describe('rules text per runtime', () => {
   });
 });
 
+describe('rule practices per runtime', () => {
+  for (const rt of ['claude', 'codex']) {
+    test(`${rt}: rules carry the four practices and name the runtime's rework tool`, (t) => {
+      const dir = freshDir(t);
+      const ctx = one(run(dir, prompt('/worker 任务'), rt)).hookSpecificOutput.additionalContext;
+      assert.ok(ctx.includes('共用背景'), 'shared background practice');
+      assert.ok(ctx.includes('简短汇报'), 'short report practice');
+      assert.ok(ctx.includes('保留上下文'), 'same-worker rework practice');
+      assert.ok(ctx.includes('没有参与实现'), 'independent review practice');
+      assert.ok(ctx.includes(rt === 'claude' ? 'SendMessage' : 'send_input'), 'rework tool name');
+    });
+  }
+});
+
 describe('command outputs per runtime', () => {
   for (const rt of ['claude', 'codex']) {
     test(`${rt}: ON, OFF and STATUS outputs have the exact shape and strings`, (t) => {

@@ -1,4 +1,4 @@
-// Per-session worker-mode state (General-Worker-MCP v2, "State model").
+// Per-session worker-mode state: one small JSON file per session id.
 // Zero dependencies: node: built-ins only.
 import { randomBytes } from 'node:crypto';
 import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
@@ -54,10 +54,11 @@ export function readState(runtime, sessionId, env = process.env) {
   }
 }
 
-// Atomic write (temp file in the same directory, then rename). Returns false when there is no session key.
+// Atomic write: a temp file in the same directory, then rename, so a reader never sees a partial file.
+// Callers check sessionKey first; a missing id throws instead of silently dropping the change.
 export function writeState(runtime, sessionId, state, env = process.env) {
   const file = statePath(runtime, sessionId, env);
-  if (file === null) return false;
+  if (file === null) throw new Error('writeState: session id is missing or empty');
   const dir = dirname(file);
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const record = {
@@ -79,5 +80,4 @@ export function writeState(runtime, sessionId, state, env = process.env) {
     }
     throw err;
   }
-  return true;
 }
