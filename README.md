@@ -5,7 +5,7 @@
 v2 的 Worker 模式：在 Claude Code 和 Codex 的会话里开启后，主会话变成只读总控。它只负责理解需求、拆成完整的工作包、派给原生子代理、验收结果并汇报；文件修改和命令执行都交给子代理。模式按会话保持，直到用户关闭，或模型按规则退出。
 
 - 只用官方扩展点。Claude Code：插件（skills + hooks + MCP）。Codex：管理员 skill（`/etc/codex/skills`）+ 托管 hooks（`/etc/codex/requirements.toml`）+ MCP。
-- 不修改 [codex web](https://github.com/Shermanxwz/Codex-Official-App-Server-Web) 和 [claude web](https://github.com/Shermanxwz/Claude-official-web) 的代码、配置或服务。
+- 不修改 [codex web](https://github.com/Shermanxwz/Codex-Official-App-Server-Web) 和 [claude web](https://github.com/Shermanxwz/Claude-official-web) 的代码、它们自己的配置（CAW_*/CWEB_* 设置）或服务。安装时只通过两家官方机制写入：Claude Code 插件安装（写入服务用户的 `CLAUDE_CONFIG_DIR` 里的 `settings.json`（`enabledPlugins`）和 `plugins/` 目录）、`/etc/codex/skills/worker/`、`/etc/codex/requirements.toml` 中的托管块，以及 owner 的 `config.toml` 里由 `codex mcp add` 写入的 worker 条目。
 - 派工用的是两家的原生子代理（Claude 的 `Agent` 工具，Codex 的 `spawn_agent`），所以两个 web 都能原生显示派工过程。
 - 仓库现在真正包含一个 MCP 服务器 `plugins/worker/runtime/worker-mcp.mjs`，提供 `enter_worker_mode` 和 `exit_worker_mode` 两个工具。运行时代码只用 Node.js 内置模块，没有第三方依赖。
 
@@ -240,4 +240,4 @@ echo '{"hook_event_name":"UserPromptSubmit","session_id":"smoke-1","prompt":"@wo
 
 - Claude：`install claude` 会自动删除 v1 的 skill，即 `$CLAUDE_SKILLS_DIR/worker/SKILL.md`（内容含 `has("agent_id")` 的文件），连同 `SKILL.md.bak`；目录为空时也删除。同名文件如果不是 v1 的，保留并给出警告。
 - Codex：`/etc/codex/skills/worker/SKILL.md` 原地替换，旧内容与新内容不同时保存为 `SKILL.md.bak`；卸载时一并删除。
-- v1 每条消息都要写 `@worker`；v2 开启一次即可，之后每条消息都保持。仓库中的 `claude/` 目录已删除，Claude 版改为插件。
+- v1 的 Codex 版每条消息都要写 `@worker`，只对当前这一轮生效。v1 的 Claude 版输入 `/worker` 后在整个会话内有效，只能开新会话来退出。v2 两家都开启一次即可，之后保持到关闭：Claude 用 `/worker:off` 或 `@worker off`，Codex 用 `@worker off`。仓库中的 `claude/` 目录已删除，Claude 版改为插件。
